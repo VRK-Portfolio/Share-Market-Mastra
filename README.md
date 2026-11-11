@@ -1,37 +1,39 @@
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+A static, component-based Next.js stock dashboard inspired by the
+[reference dashboard](https://sites.google.com/view/stock-analysis-dashboard/).
 
-## Getting Started
+## Run
 
-First, run the development server:
-
-```bash
+```sh
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. No Groww account, API subscription, tokens, session
+secret, static IP or other dashboard credentials are required.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Features
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Responsive Tailwind CSS layout with persistent light/dark themes.
+- Clearly labeled illustrative RELIANCE prices, indicators and candlestick charts.
+- Local 15m/1h/1D sample charts with volume, hover OHLC and overlay toggles.
+- MIS/CNC display presets for technical indicator cards.
+- `technicalindicators` calculates VWAP, RSI, ATR, EMAs and MACD from sample candles
+  during page rendering. SuperTrend uses its ATR implementation.
 
-## Learn More
+**No dashboard API calls, authentication, cookies, live prices or order placement.**
+Sample data is deterministic and fictional, not actual historical market data or
+investment advice. Each interval is an independent illustrative series; the quote
+card summarizes the final session of the 15-minute sample.
 
-To learn more about Next.js, take a look at the following resources:
+## Components and data
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `src/components/dashboard/`: header/theme control, stock overview, indicator
+  cards, candlestick chart, market context and dashboard composition.
+- `src/lib/market/sample-data.ts`: fixed sample candle series and quote.
+- `src/lib/market/indicators.ts`: indicator calculations.
+- `src/app/page.tsx`: prepares sample analyses and renders the dashboard.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The Groww HTTP client, API routes, login dialog, encrypted sessions, credential
+configuration and API-specific tests have been removed. Existing Mastra examples
+and unrelated dependencies are unchanged.

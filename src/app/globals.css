@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --background: #f5f6fa;
+  --foreground: #242735;
+  --panel: #ffffff;
+  --inset: #f8f9fc;
+  --line: #e4e6ee;
+  --muted: #72798b;
+  --accent: #6654e8;
+  --positive: #008b69;
+  --negative: #d33f5c;
+  --warning: #a8730c;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #0c0f14;
+  --foreground: #edf0f7;
+  --panel: #151821;
+  --inset: #0e1118;
+  --line: #272c39;
+  --muted: #8d95a8;
+  --accent: #9c8dff;
+  --positive: #27c89c;
+  --negative: #f4778d;
+  --warning: #f5c35f;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-inset: var(--inset);
+  --color-line: var(--line);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--warning);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-line bg-panel shadow-sm;
+  }
+  .eyebrow {
+    @apply text-[10px] font-medium uppercase tracking-[0.14em] text-muted;
+  }
+  .field-label {
+    @apply block text-[11px] font-medium text-muted;
+  }
+  .field {
+    @apply h-[46px] rounded-lg border border-line bg-inset px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted/60 focus:border-accent focus:ring-2 focus:ring-accent/15;
+  }
+  textarea.field {
+    @apply h-auto py-3;
+  }
+  .primary-button {
+    @apply inline-flex cursor-pointer items-center gap-2 rounded-lg border border-[#7864f5] bg-[#6550e6] px-4 py-2.5 font-medium text-white shadow-[0_3px_16px_#6550e620] transition-colors hover:bg-[#7661f0] disabled:cursor-wait disabled:opacity-50;
+  }
+  .secondary-button {
+    @apply inline-flex cursor-pointer items-center gap-2 rounded-lg border border-line px-4 py-2.5 text-foreground transition-colors hover:bg-inset disabled:cursor-wait disabled:opacity-50;
+  }
+  .icon-button {
+    @apply inline-flex size-8 cursor-pointer items-center justify-center rounded-lg text-muted transition-colors hover:bg-inset hover:text-foreground;
+  }
+  .badge {
+    @apply rounded-md border border-accent/25 bg-accent/8 px-2 py-1 font-mono text-[9px] font-medium tracking-wider text-accent;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+button, a, input, select, textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible, a:focus-visible, input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+::selection {
+  background: #7763e84d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
