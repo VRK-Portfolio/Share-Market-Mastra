@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
   },
   cacheComponents: true,
   partialPrefetching: true,
+  outputFileTracingExcludes: {
+    "/*": ["./.groww-venv/**/*", "./.groww-orders/**/*", "./scripts/groww/__pycache__/**/*"],
+  },
   turbopack: {
     rules: {
       "*.css": {

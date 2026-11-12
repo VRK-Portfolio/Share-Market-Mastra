@@ -2,8 +2,12 @@
 
 import Link from "next/link";
 import { Icon } from "./icons";
+import { GrowwConnection } from "./groww-connection";
 
-export function Header() {
+export function Header({ connected, onConnectionChange }: {
+  connected: boolean;
+  onConnectionChange: (connected: boolean) => void;
+}) {
   function toggleTheme() {
     const next = document.documentElement.classList.contains("dark") ? "light" : "dark";
     document.documentElement.classList.toggle("dark", next === "dark");
@@ -21,9 +25,10 @@ export function Header() {
           <span className="ml-1 hidden rounded border border-accent/25 bg-accent/8 px-2 py-1 font-mono text-[10px] tracking-wider text-accent lg:block">MARKET WORKSPACE</span>
         </Link>
         <div className="flex items-center gap-3 sm:gap-5">
+          <GrowwConnection connected={connected} onConnectionChange={onConnectionChange} />
           <span className="hidden items-center gap-2 text-xs text-muted sm:flex">
-            <span className="size-2 rounded-full bg-warning" />
-            Static preview
+            <span className={`size-2 rounded-full ${connected ? "bg-positive" : "bg-warning"}`} />
+            {connected ? "Groww snapshots" : "Not connected"}
           </span>
           <button type="button" className="icon-button" onClick={toggleTheme} aria-label="Toggle light/dark theme">
             <Icon name="sun" className="hidden size-[18px] dark:block" />

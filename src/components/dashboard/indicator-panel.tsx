@@ -20,9 +20,16 @@ export function IndicatorPanel({ data, mode }: { data: MarketAnalysis | null; mo
   return (
     <section className="panel p-5 sm:p-7" aria-labelledby="indicators-title">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3"><Icon name="chart" className="size-5 text-accent" /><h2 id="indicators-title" className="text-sm font-semibold tracking-wide">Dynamic technical indicators</h2><span className="badge">{mode === "MIS" ? "INTRADAY (MIS)" : "DELIVERY (CNC)"}</span></div>
-        <span className="font-mono text-[10px] text-muted">technicalindicators · calculated from sample OHLCV</span>
+        <div className="flex flex-wrap items-center gap-3"><Icon name="chart" className="size-5 text-accent" /><h2 id="indicators-title" className="text-sm font-semibold tracking-wide">Dynamic technical indicators</h2><span className="badge">{mode === "MIS" ? "INTRADAY (MIS)" : mode === "NRML" ? "OVERNIGHT (NRML)" : "DELIVERY (CNC)"}</span></div>
+        <span className="font-mono text-[10px] text-muted">technicalindicators · calculated from Groww OHLCV</span>
       </div>
+      {data?.segment === "FNO" && <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        {[
+          { label: "Open interest", value: decimal(data.quote.openInterest ?? data.candles.at(-1)?.openInterest), note: "Groww quote or latest contract candle" },
+          { label: "OI day change", value: decimal(data.quote.oiDayChange), note: "Reported by Groww; not a standalone sentiment signal" },
+          { label: "IV (Groww value)", value: decimal(data.quote.impliedVolatility), note: "Reported value; no unit conversion or estimated Greeks" },
+        ].map(({ label, value, note }) => <article key={label} className="rounded-xl border border-line bg-inset p-5"><h3 className="text-xs text-muted">{label}</h3><p className="my-3 font-mono text-xl">{value}</p><p className="text-[11px] text-muted">{note}</p></article>)}
+      </div>}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map((card, index) => <article key={card.label} className="rounded-xl border border-line bg-inset p-5"><div className="flex items-center justify-between"><h3 className="text-xs text-muted">{card.label}</h3><span className="font-mono text-[10px] text-muted/50">0{index + 1}</span></div><p className={`my-3 font-mono text-2xl font-semibold tracking-tight ${card.tone}`}>{card.value}</p><p className="text-[11px] text-muted">{card.note}</p></article>)}
       </div>
