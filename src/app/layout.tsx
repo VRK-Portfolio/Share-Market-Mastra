@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "TradeTerminal | Stock Analysis Dashboard",
-  description: "A static stock dashboard preview with illustrative charts, technical indicators, and light and dark themes.",
+  description: "A Groww-connected stock dashboard with portfolio snapshots, actual quotes, historical charts, and calculated technical indicators.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
