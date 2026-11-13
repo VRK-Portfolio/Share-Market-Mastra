@@ -6,6 +6,8 @@ import type { StockRecommendation as Recommendation } from "../../lib/market/rec
 import type { AnalysisMode, MarketAnalysis } from "../../lib/market/types";
 import { decimal, money } from "./format";
 import { OrderReview } from "./order-review";
+import { IndicatorInfo } from "./indicator-info";
+import { TradeCalculator } from "./trade-calculator";
 
 export function StockRecommendation({ data, mode, onSessionExpired }: {
   data: MarketAnalysis;
@@ -66,8 +68,8 @@ export function StockRecommendation({ data, mode, onSessionExpired }: {
         </div>
         <button type="button" className="secondary-button text-xs" disabled={loading} onClick={() => { void analyze(); }}>{loading ? "Analyzing..." : "Analyze with Gemini"}</button>
       </div>
-      {loading && <p role="status" className="text-sm text-muted">Gemini is analyzing the stock quote, candles and indicators...</p>}
-      {!loading && !recommendation && !error && <p className="text-sm text-muted">Click Analyze with Gemini to request a new analysis. Streaming prices never trigger the agent.</p>}
+      {loading && <p role="status" className="text-sm text-muted">Gemini is interpreting the precomputed indicators and technical verdict...</p>}
+      {!loading && !recommendation && !error && <p className="text-sm text-muted">The technical verdict above needs no LLM. Click Analyze with Gemini for an optional independent interpretation of server-verified indicator parameters. Raw candles and repeated per-indicator model explanations are omitted to reduce tokens. Streaming prices never trigger the agent.</p>}
       {error && <p role="alert" className="rounded-xl border border-negative/25 bg-negative/5 p-4 text-sm text-negative">{error}</p>}
       {recommendation && <>
         <div className="mb-5 flex flex-wrap items-center gap-3">
@@ -75,7 +77,8 @@ export function StockRecommendation({ data, mode, onSessionExpired }: {
           <span className="text-xs text-muted">Subjective model confidence: {recommendation.confidencePercent}% (not a profit probability)</span>
         </div>
         <p className="mb-5 text-sm">{recommendation.summary}</p>
-        <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Indicator-based prediction evidence">
+        <p className="mb-3 text-xs text-muted">Code-derived signals from the freshly fetched Gemini input snapshot, not model-generated indicator values or explanations:</p>
+        <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Code-derived Gemini input evidence">
           {recommendation.indicatorAssessments.map((item) => {
             const snapshot = recommendation.indicatorSnapshot;
             const value = { VWAP: snapshot.vwap, RSI: snapshot.rsi, ATR: snapshot.atr, EMA20: snapshot.ema20,
@@ -84,7 +87,7 @@ export function StockRecommendation({ data, mode, onSessionExpired }: {
               : "histogram" in value ? `Line ${decimal(value.value)} / Signal ${decimal(value.signal)} / Histogram ${decimal(value.histogram)}`
               : `${decimal(value.value)} / ${value.direction}`;
             return <div key={item.indicator} className="rounded-xl border border-line bg-inset p-4">
-              <h3 className="text-xs font-semibold">{item.indicator} · {item.signal}</h3>
+              <div className="flex items-center justify-between gap-2"><h3 className="text-xs font-semibold">{item.indicator} · {item.signal}</h3><IndicatorInfo name={item.indicator} values={snapshot} /></div>
               <p className="mt-2 font-mono text-xs">{label}</p><p className="mt-2 text-xs text-muted">{item.explanation}</p>
             </div>;
           })}
@@ -116,6 +119,7 @@ export function StockRecommendation({ data, mode, onSessionExpired }: {
         </div>
         <p className="mt-4 text-[11px] text-muted">Reference quote {money(recommendation.referencePrice)} · snapshot {new Date(recommendation.snapshotAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST · {recommendation.candleSampleCount} recent candles sent, indicators based on {recommendation.candleCount} complete candles · {recommendation.omittedCandles} incomplete candles omitted.</p>
         <OrderReview key={recommendation.generatedAt} recommendation={recommendation} onSessionExpired={onSessionExpired} />
+        <TradeCalculator result={recommendation} source="GEMINI" />
       </>}
       <p className="mt-4 text-xs text-muted">AI-generated technical scenarios, not personalized investment advice or guaranteed targets. News and fundamentals are not included. Only public stock market data is sent to Google; your Groww token and portfolio are not sent. Each button-triggered analysis may incur Google API charges. Recommendations remain snapshots; click again to reassess newer prices.</p>
     </section>

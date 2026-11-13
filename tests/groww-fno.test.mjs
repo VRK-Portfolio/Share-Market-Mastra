@@ -70,9 +70,6 @@ const plan = {
   decision: "SELL", confidencePercent: 55, summary: "Conditional futures short setup.",
   entryPrice: 151, targetPrices: [141, 131], stopLoss: 156,
   supportLevels: [141], resistanceLevels: [156], rationale: ["Contract price momentum."],
-  indicatorAssessments: ["VWAP", "RSI", "ATR", "EMA20", "EMA50", "MACD", "SUPERTREND"].map((indicator) => ({
-    indicator, signal: "NEUTRAL", explanation: "Actual contract indicator values require confirmation from other signals.",
-  })),
   risks: ["Margin and expiry risk; verify eligibility."], invalidation: "Above resistance.", gtt: null,
 };
 
@@ -202,7 +199,10 @@ test("Gemini futures NRML receives exact contract metadata, premiums/OI and vali
   assert.equal(input.instrument.lotSize, 65);
   assert.equal(input.instrument.expiry, "2099-11-23");
   assert.equal(input.quote.openInterest, 50000);
-  assert.equal(input.candles[0].openInterest, 10000);
+  assert.equal(input.candles, undefined);
+  assert.equal(input.coverage.candleSampleCount, 0);
+  assert.ok(input.technical.macd);
+  assert.ok(input.ruleVerdict);
   assert.ok(!prompt.includes(token));
   assert.ok(!prompt.includes("test-google-fno-key"));
 });

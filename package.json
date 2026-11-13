@@ -9,7 +9,7 @@
     "setup:groww-feed": "python3 -m venv .groww-venv && .groww-venv/bin/python -m pip install -r scripts/groww/requirements.txt",
     "test:groww-feed": ".groww-venv/bin/python -m unittest discover -s scripts/groww -p 'test_*.py'",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test tests/indicators.test.mjs tests/sample-data.test.mjs tests/groww-session.test.mjs tests/groww-connection.test.mjs tests/groww-portfolio.test.mjs tests/groww-analysis.test.mjs tests/groww-recommendation.test.mjs tests/groww-fno.test.mjs tests/groww-stream.test.mjs tests/groww-orders.test.mjs"
+    "test": "node --experimental-strip-types --test tests/indicators.test.mjs tests/technical-verdict.test.mjs tests/trade-calculator.test.mjs tests/sample-data.test.mjs tests/groww-session.test.mjs tests/groww-connection.test.mjs tests/groww-portfolio.test.mjs tests/groww-stock-search.test.mjs tests/groww-analysis.test.mjs tests/groww-recommendation.test.mjs tests/groww-fno.test.mjs tests/groww-stream.test.mjs tests/groww-orders.test.mjs"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.173",

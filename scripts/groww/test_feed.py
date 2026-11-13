@@ -77,9 +77,71 @@ class FeedTests(unittest.TestCase):
                 "exchangeToken": "2885", "instrumentType": "EQ",
             }))
         self.assertEqual([message["type"] for message in messages], ["connected", "tick", "error"])
-        self.assertEqual(messages[-1], {"type": "error", "code": 502})
+        self.assertEqual(messages[-1], {"type": "error", "code": 502, "stage": "disconnected", "failureType": "disconnected"})
         self.assertTrue(instances[0].is_closed)
         self.assertEqual(instances[0].topic, FeedConstants.get_live_price_topic("CASH", "NSE", "2885").get_topic())
+
+    def test_diagnostics_name_failed_stage_without_provider_payloads_or_tokens(self):
+        token = "fake-private-test-token"
+        error = ValueError(f"Provider body contains {token}")
+        self.assertEqual(feed.failure_message(error, "socket-token", token), {
+            "type": "error", "code": 502, "stage": "socket-token", "failureType": "invalid-response",
+        })
+        self.assertEqual(feed.failure_message(TimeoutError(token), "connection", token)["code"], 504)
+        self.assertEqual(feed.failure_message(error, "decoding", token)["failureType"], "invalid-tick")
+        from growwapi.groww.exceptions import GrowwAPIException
+        self.assertEqual(feed.failure_message(GrowwAPIException(code=token, msg=token), "socket-token", token).get("upstreamCode"), None)
+        self.assertEqual(feed.failure_message(GrowwAPIException(code="GA005", msg=token), "socket-token", token)["upstreamCode"], "GA005")
+
+    def test_invalid_socket_token_response_is_attributed_to_authentication_stage(self):
+        with patch.object(GrowwAPI, "generate_socket_token", return_value={}), self.assertRaises(feed.FeedFailure) as caught:
+            asyncio.run(feed.run({
+                "accessToken": "fake-test-token", "exchange": "NSE", "segment": "CASH",
+                "exchangeToken": "2885", "instrumentType": "EQ",
+            }))
+        self.assertEqual(caught.exception.stage, "socket-token")
+        self.assertEqual(feed.failure_message(caught.exception.cause, caught.exception.stage)["failureType"], "invalid-response")
+
+    def test_initialization_failures_never_announce_a_connected_feed(self):
+        for mode in ("connection", "subscription", "callback", "decoding"):
+            with self.subTest(mode=mode):
+                messages = []
+
+                class Client:
+                    is_closed = False
+
+                    async def connect(self, **kwargs):
+                        if mode == "connection":
+                            raise ConnectionError("private-provider-response")
+                        if mode == "callback":
+                            await kwargs["error_cb"](ConnectionError("private-provider-response"))
+
+                    async def subscribe(self, topic, cb):
+                        if mode == "subscription":
+                            raise ValueError("private-provider-response")
+                        if mode == "decoding":
+                            await cb(SimpleNamespace(data=b"\xff"))
+
+                    async def flush(self, timeout):
+                        pass
+
+                    async def close(self):
+                        self.is_closed = True
+
+                client = Client()
+                with patch.object(GrowwAPI, "generate_socket_token", return_value={"token": "fake-test-socket-jwt"}), patch("nats.aio.client.Client", return_value=client), patch.object(feed, "emit", messages.append):
+                    try:
+                        asyncio.run(feed.run({
+                            "accessToken": "fake-test-token", "exchange": "NSE", "segment": "CASH",
+                            "exchangeToken": "2885", "instrumentType": "EQ",
+                        }))
+                    except feed.FeedFailure as error:
+                        messages.append(feed.failure_message(error.cause, error.stage))
+                self.assertEqual(len(messages), 1)
+                self.assertEqual(messages[0]["type"], "error")
+                self.assertEqual(messages[0]["stage"], "connection" if mode == "callback" else mode)
+                self.assertNotIn("private-provider-response", str(messages))
+                self.assertTrue(client.is_closed)
 
 
 if __name__ == "__main__":

@@ -19,12 +19,36 @@ export const fnoInstrumentSchema = z.object({
 export type FnoInstrument = z.infer<typeof fnoInstrumentSchema>;
 
 export const instrumentSearchSchema = z.object({
+  segment: z.literal("FNO").default("FNO"),
   q: z.string().trim().toUpperCase().min(2).max(50).regex(/^[A-Z0-9&._ -]+$/),
   exchange: z.enum(["NSE", "BSE"]).default("NSE"),
   type: z.enum(["ALL", "FUT", "CE", "PE"]).default("ALL"),
   expiry: z.iso.date().optional(),
   strike: z.coerce.number().finite().positive().optional(),
   page: z.coerce.number().int().positive().default(1),
+});
+export const cashInstrumentSchema = z.object({
+  exchange: z.enum(["NSE", "BSE"]),
+  tradingSymbol: stockSymbolSchema,
+  growwSymbol: z.string().min(1).max(120),
+  name: z.string().trim().min(1).nullable(),
+});
+export type CashInstrument = z.infer<typeof cashInstrumentSchema>;
+export const cashInstrumentSearchSchema = z.object({
+  segment: z.literal("CASH"),
+  q: z.string().trim().toUpperCase().min(2).max(100),
+  exchange: z.enum(["NSE", "BSE"]).default("NSE"),
+  page: z.coerce.number().int().positive().default(1),
+});
+export const cashInstrumentSearchResponseSchema = z.object({
+  segment: z.literal("CASH"),
+  q: z.string(),
+  exchange: z.enum(["NSE", "BSE"]),
+  instruments: z.array(cashInstrumentSchema),
+  total: z.number().int().nonnegative(),
+  page: z.number().int().positive(),
+  pageSize: z.literal(30),
+  hasMore: z.boolean(),
 });
 export const instrumentSearchResponseSchema = z.object({
   instruments: z.array(fnoInstrumentSchema),

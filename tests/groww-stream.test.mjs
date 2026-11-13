@@ -121,6 +121,54 @@ test("request abort closes an established SSE stream and kills only its own work
   assert.equal(worker.kill.mock.callCount(), 1);
 });
 
+test("safe worker diagnostics identify the failing stage without exposing credentials or raw provider errors", async (t) => {
+  const { worker } = mockWorker(t);
+  const log = t.mock.method(console, "error", () => {});
+  const pending = startGrowwFeed("fake-private-token", instrument, new AbortController().signal);
+  worker.stdout.write(JSON.stringify({ type: "error", code: 502, stage: "socket-token", failureType: "invalid-response",
+    upstreamCode: "GA005", providerBody: "fake-private-token", stack: "private-provider-stack" }) + "\n");
+  await assert.rejects(pending, (error) => {
+    assert.deepEqual(error.diagnostic, { stage: "socket-token", failureType: "invalid-response", upstreamCode: "GA005" });
+    assert.match(error.message, /socket-token creation/);
+    return true;
+  });
+  assert.ok(!JSON.stringify(log.mock.calls).includes("fake-private-token"));
+  assert.ok(!JSON.stringify(log.mock.calls).includes("private-provider-stack"));
+});
+
+test("initial HTTP errors expose diagnostics but strip an upstream code containing the session token", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(catalog));
+  t.mock.method(console, "error", () => {});
+  const { worker } = mockWorker(t);
+  const pending = GET(request());
+  setTimeout(() => worker.stdout.write(JSON.stringify({ type: "error", code: 502, stage: "connection",
+    failureType: "connection-failed", upstreamCode: "fake-stream-test-token" }) + "\n"), 10);
+  const response = await pending;
+  assert.equal(response.status, 502);
+  assert.equal(response.headers.get("set-cookie"), null);
+  const body = await response.json();
+  assert.equal(body.stage, "connection");
+  assert.equal(body.failureType, "connection-failed");
+  assert.equal(body.upstreamCode, undefined);
+  assert.ok(!JSON.stringify(body).includes("fake-stream-test-token"));
+});
+
+test("established SSE errors preserve safe decoding diagnostics and close the feed", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const { worker } = mockWorker(t);
+  const pending = startGrowwFeed("fake-token", instrument, new AbortController().signal);
+  worker.stdout.write('{"type":"connected"}\n');
+  const reader = (await pending).getReader();
+  await reader.read();
+  worker.stdout.write(JSON.stringify({ type: "error", code: 502, stage: "decoding", failureType: "invalid-tick" }) + "\n");
+  const error = new LiveEventDecoder().push(new TextDecoder().decode((await reader.read()).value))[0];
+  assert.equal(error.stage, "decoding");
+  assert.equal(error.failureType, "invalid-tick");
+  assert.match(error.error, /price tick/);
+  assert.equal((await reader.read()).done, true);
+  assert.equal(worker.kill.mock.callCount(), 1);
+});
+
 test("missing Python setup and malformed IPC fail explicitly rather than reporting connected", async (t) => {
   const missing = mockWorker(t);
   const missingPending = startGrowwFeed("fake-token", instrument, new AbortController().signal);

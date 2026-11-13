@@ -1,6 +1,6 @@
 import { parse } from "csv-parse/sync";
 import { z } from "zod";
-import { fnoInstrumentSchema } from "./instrument-schemas.ts";
+import { cashInstrumentSchema, fnoInstrumentSchema } from "./instrument-schemas.ts";
 import type { FnoInstrument } from "./instrument-schemas.ts";
 import { feedInstrumentSchema } from "./live-schemas.ts";
 import { orderInstrumentSchema } from "./order-schemas.ts";
@@ -17,6 +17,21 @@ const requiredColumns = Object.keys(rowSchema.shape).concat("segment");
 type Catalog = { instruments: FnoInstrument[]; records: Record<string, string>[] };
 let cache: Catalog & { expiresAt: number } | undefined;
 let pending: Promise<Catalog> | undefined;
+
+export class InstrumentCatalogError extends Error {
+  readonly stage: "catalog download" | "catalog validation";
+  readonly failureType: "timeout" | "http" | "network" | "invalid-catalog";
+  readonly upstreamStatus?: number;
+
+  constructor(failureType: InstrumentCatalogError["failureType"], upstreamStatus?: number) {
+    super(failureType === "timeout" ? "Groww's instrument catalog download timed out. Retry the stock or contract search."
+      : failureType === "invalid-catalog" ? "Groww returned an invalid instrument catalog. Retry the stock or contract search."
+      : "Unable to download Groww's instrument catalog. Check the server's network connection and retry the search.");
+    this.stage = failureType === "invalid-catalog" ? "catalog validation" : "catalog download";
+    this.failureType = failureType;
+    this.upstreamStatus = upstreamStatus;
+  }
+}
 
 function parseRecords(csv: string) {
   const rows: unknown = parse(csv, {
@@ -54,12 +69,27 @@ async function getCatalog(signal: AbortSignal): Promise<Catalog> {
   if (cache && cache.expiresAt > Date.now()) return cache;
   if (!pending) {
     pending = (async () => {
-      const response = await fetch("https://growwapi-assets.groww.in/instruments/instrument.csv", {
-        cache: "no-store", signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) throw new Error("Unable to download Groww instrument catalog.");
-      const records = parseRecords(await response.text());
-      const instruments = parseFnoRecords(records);
+      const downloadSignal = AbortSignal.timeout(45_000);
+      let csv: string;
+      try {
+        const response = await fetch("https://growwapi-assets.groww.in/instruments/instrument.csv", {
+          cache: "no-store", signal: downloadSignal,
+        });
+        if (!response.ok) throw new InstrumentCatalogError("http", response.status);
+        csv = await response.text();
+      } catch (error) {
+        if (error instanceof InstrumentCatalogError) throw error;
+        throw new InstrumentCatalogError(downloadSignal.aborted ||
+          error instanceof DOMException && error.name === "TimeoutError" ? "timeout" : "network");
+      }
+      let records: Catalog["records"];
+      let instruments: Catalog["instruments"];
+      try {
+        records = parseRecords(csv);
+        instruments = parseFnoRecords(records);
+      } catch {
+        throw new InstrumentCatalogError("invalid-catalog");
+      }
       cache = { instruments, records, expiresAt: Date.now() + 3_600_000 };
       return cache;
     })();
@@ -77,6 +107,29 @@ async function getCatalog(signal: AbortSignal): Promise<Catalog> {
 
 export async function getFnoInstruments(signal: AbortSignal): Promise<FnoInstrument[]> {
   return (await getCatalog(signal)).instruments;
+}
+
+export async function searchCashInstruments(q: string, exchange: "NSE" | "BSE", signal: AbortSignal) {
+  const query = q.trim().toUpperCase();
+  const records = (await getCatalog(signal)).records;
+  const seen = new Set<string>();
+  return records.filter((row) => row.segment === "CASH" && row.instrument_type === "EQ" && row.exchange === exchange)
+    .flatMap((row) => {
+      const symbol = row.trading_symbol.toUpperCase();
+      const name = (row.name ?? "").trim().toUpperCase();
+      if (seen.has(symbol) || ![symbol, name].some((value) => value.includes(query))) return [];
+      seen.add(symbol);
+      const parsed = cashInstrumentSchema.safeParse({
+        exchange: row.exchange, tradingSymbol: row.trading_symbol, growwSymbol: row.groww_symbol,
+        name: row.name?.trim() || null,
+      });
+      if (!parsed.success) throw new InstrumentCatalogError("invalid-catalog");
+      const instrument = parsed.data;
+      const rank = symbol === query ? 0 : name === query ? 1 : symbol.startsWith(query) ? 2 : name.startsWith(query) ? 3 : 4;
+      return [{ instrument, rank }];
+    })
+    .sort((a, b) => a.rank - b.rank || a.instrument.tradingSymbol.localeCompare(b.instrument.tradingSymbol))
+    .map(({ instrument }) => instrument);
 }
 
 export async function getFeedInstrument(symbol: string, exchange: "NSE" | "BSE", segment: "CASH" | "FNO", signal: AbortSignal) {

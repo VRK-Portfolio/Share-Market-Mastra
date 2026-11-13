@@ -8,6 +8,7 @@ import {
 } from "../../../../lib/market/recommendation.ts";
 import { stockAnalysisAgent } from "../../../../mastra/agents/stock-analysis-agent.ts";
 import { GET as getMarketAnalysis } from "../analysis/route.ts";
+import { indicatorAssessments } from "../../../../lib/market/technical-verdict.ts";
 
 export const maxDuration = 90;
 
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
     const result = await stockAnalysisAgent.generate(stockAnalysisPrompt(analysis, mode), {
       structuredOutput: { schema: outputSchema, errorStrategy: "strict" },
       maxSteps: 1,
-      modelSettings: { temperature: 0.2, maxOutputTokens: 4096, maxRetries: 0, timeout: { totalMs: 45_000 } },
+      modelSettings: { temperature: 0.2, maxOutputTokens: 2048, maxRetries: 0, timeout: { totalMs: 45_000 } },
       abortSignal: request.signal,
     });
     const plan = outputSchema.safeParse(result.object);
@@ -59,8 +60,7 @@ export async function POST(request: Request) {
     const snapshot = indicatorSnapshot(analysis);
     const values = { VWAP: snapshot.vwap, RSI: snapshot.rsi, ATR: snapshot.atr, EMA20: snapshot.ema20,
       EMA50: snapshot.ema50, MACD: snapshot.macd, SUPERTREND: snapshot.supertrend };
-    if (plan.data.indicatorAssessments.some((item) => (values[item.indicator] === null) !== (item.signal === "UNAVAILABLE")) ||
-      (Object.values(values).every((value) => value === null) && plan.data.decision !== "HOLD")) {
+    if (Object.values(values).every((value) => value === null) && plan.data.decision !== "HOLD") {
       console.error("Gemini indicator assessments did not match available indicator data.");
       return Response.json({ error: "Gemini returned inconsistent indicator evidence. Retry analysis; no orders were placed." }, { status: 502, headers: sessionResponseHeaders });
     }
@@ -70,9 +70,10 @@ export async function POST(request: Request) {
       generatedAt: new Date().toISOString(), snapshotAt: analysis.fetchedAt,
       referencePrice: analysis.quote.price, lastTradeTime: analysis.quote.lastTradeTime,
       lastCandleTime: analysis.candles.at(-1)?.time ?? null,
-      candleCount: analysis.candles.length, candleSampleCount: Math.min(120, analysis.candles.length),
+      candleCount: analysis.candles.length, candleSampleCount: 0,
       omittedCandles: analysis.omittedCandles ?? 0,
       indicatorSnapshot: snapshot,
+      indicatorAssessments: indicatorAssessments(analysis),
       riskRewardRatio: entryPrice !== null && stopLoss !== null && targetPrices.length
         ? Math.abs(targetPrices[0] - entryPrice) / Math.abs(entryPrice - stopLoss) : null,
     });

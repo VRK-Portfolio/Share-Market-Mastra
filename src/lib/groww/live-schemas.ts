@@ -10,16 +10,24 @@ export const feedInstrumentSchema = z.object({
   instrumentType: z.enum(["EQ", "IDX", "FUT", "CE", "PE"]),
 });
 export type FeedInstrument = z.infer<typeof feedInstrumentSchema>;
+export const feedDiagnosticSchema = z.object({
+  stage: z.enum(["startup", "socket-token", "connection", "subscription", "decoding", "disconnected"]).optional(),
+  failureType: z.enum(["missing-dependency", "authentication", "rate-limit", "timeout", "tls", "invalid-tick",
+    "invalid-response", "invalid-config", "disconnected", "sdk-failure", "connection-failed",
+    "subscription-failed", "worker-failure"]).optional(),
+  upstreamCode: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+});
+export type FeedDiagnostic = z.infer<typeof feedDiagnosticSchema>;
 export const workerMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("connected") }),
   z.object({ type: z.literal("tick"), price: z.number().finite().positive(), tradeTime: z.number().int().positive().max(8_640_000_000_000_000) }),
-  z.object({ type: z.literal("error"), code: z.union([z.literal(401), z.literal(403), z.literal(429), z.literal(502), z.literal(503), z.literal(504)]) }),
+  feedDiagnosticSchema.extend({ type: z.literal("error"), code: z.union([z.literal(401), z.literal(403), z.literal(429), z.literal(502), z.literal(503), z.literal(504)]) }),
 ]);
 const identity = feedInstrumentSchema.pick({ symbol: true, exchange: true, segment: true });
 export const liveEventSchema = z.discriminatedUnion("type", [
   identity.extend({ type: z.literal("connected") }),
   identity.extend({ type: z.literal("tick"), price: z.number().finite().positive(), tradeTime: z.number().int().positive().max(8_640_000_000_000_000), receivedAt: z.iso.datetime() }),
-  identity.extend({ type: z.literal("error"), code: z.number().int(), error: z.string().min(1).max(300) }),
+  identity.extend({ ...feedDiagnosticSchema.shape, type: z.literal("error"), code: z.number().int(), error: z.string().min(1).max(300) }),
 ]);
 export type LiveTick = Extract<z.infer<typeof liveEventSchema>, { type: "tick" }>;
 

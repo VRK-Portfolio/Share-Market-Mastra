@@ -12,6 +12,7 @@ import { StockOverview } from "./stock-overview";
 import { StockRecommendation } from "./stock-recommendation";
 import { useLiveQuote } from "./use-live-quote";
 import { applyLiveTick } from "../../lib/groww/live-schemas";
+import { TechnicalVerdict } from "./technical-verdict";
 
 type SearchResult =
   | { key: string; data: MarketAnalysis; error?: never }
@@ -27,6 +28,7 @@ export function LiveStockAnalysis({ onSessionExpired }: { onSessionExpired: () =
   const [mode, setMode] = useState<AnalysisMode>("MIS");
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<SearchResult | null>(null);
+  const [forecastResult, setForecastResult] = useState<SearchResult | null>(null);
   const normalized = symbol.trim().toUpperCase();
   const valid = stockSymbolSchema.safeParse(normalized).success;
   const key = JSON.stringify([normalized, exchange, interval, segment, contract?.growwSymbol, revision]);
@@ -37,16 +39,20 @@ export function LiveStockAnalysis({ onSessionExpired }: { onSessionExpired: () =
     result.data.segment === segment ? result.data : null;
   const live = useLiveQuote(streamData, onSessionExpired);
   const displayData = data && live.tick ? applyLiveTick(data, live.tick) : data;
+  const forecastCurrent = interval === "15minute" ? current : forecastResult?.key === key ? forecastResult : null;
+  const forecastSnapshot = valid ? forecastCurrent?.data ?? null : null;
+  const forecastData = forecastSnapshot && live.tick ? applyLiveTick(forecastSnapshot, live.tick) : forecastSnapshot;
 
   useEffect(() => {
     if (!valid) return;
     const controller = new AbortController();
-    const timeout = setTimeout(async () => {
+    async function load(targetInterval: Interval, publish: (value: SearchResult) => void) {
       try {
-        const query = new URLSearchParams({ symbol: normalized, exchange, interval, segment });
+        const query = new URLSearchParams({ symbol: normalized, exchange, interval: targetInterval, segment });
         const response = await fetch(`/api/groww/analysis?${query}`, { cache: "no-store", signal: controller.signal });
         if (controller.signal.aborted) return;
         if (response.status === 401) {
+          controller.abort();
           onSessionExpired();
           return;
         }
@@ -57,16 +63,20 @@ export function LiveStockAnalysis({ onSessionExpired }: { onSessionExpired: () =
           throw new Error(message);
         }
         const parsed = marketAnalysisSchema.safeParse(body);
-        if (!parsed.success || parsed.data.symbol !== normalized || parsed.data.exchange !== exchange || parsed.data.interval !== interval ||
+        if (!parsed.success || parsed.data.symbol !== normalized || parsed.data.exchange !== exchange || parsed.data.interval !== targetInterval ||
           parsed.data.segment !== segment || (segment === "FNO" && parsed.data.instrument?.growwSymbol !== contract?.growwSymbol)) {
           throw new Error("The market-data response did not match your selected stock. Please retry.");
         }
-        if (!controller.signal.aborted) setResult({ key, data: parsed.data });
+        if (!controller.signal.aborted) publish({ key, data: parsed.data });
       } catch (error) {
         if (!controller.signal.aborted) {
-          setResult({ key, error: error instanceof Error ? error.message : "Unable to fetch Groww market data." });
+          publish({ key, error: error instanceof Error ? error.message : "Unable to fetch Groww market data." });
         }
       }
+    }
+    const timeout = setTimeout(() => {
+      void load(interval, setResult);
+      if (interval !== "15minute") void load("15minute", setForecastResult);
     }, 500);
     return () => { clearTimeout(timeout); controller.abort(); };
   }, [valid, normalized, exchange, interval, segment, contract, key, onSessionExpired]);
@@ -80,6 +90,7 @@ export function LiveStockAnalysis({ onSessionExpired }: { onSessionExpired: () =
         onExchangeChange={(value) => { setExchange(value); setContract(null); setRevision((current) => current + 1); }}
         onModeChange={setMode}
         onRefresh={() => setRevision((value) => value + 1)}
+        onSessionExpired={onSessionExpired}
       />
       {data && <div className="rounded-xl border border-line bg-panel p-4 text-xs">
         <p role="status" className={live.fresh ? "text-positive" : "text-muted"}>{live.error ? "Price feed disconnected; latest known data is shown."
@@ -90,13 +101,16 @@ export function LiveStockAnalysis({ onSessionExpired }: { onSessionExpired: () =
         <p className="mt-2 text-muted">LTP and derived day change stream in real time. Day OHLC, volume, OI/IV, candles and indicators remain REST snapshots; Refresh market data updates them. Gemini runs only on button click.</p>
       </div>}
       {segment === "FNO" && <FnoContractPicker key={exchange} exchange={exchange} selected={contract} onSelect={setContract} onSessionExpired={onSessionExpired} />}
-      {!normalized && <p role="status" className="text-sm text-muted">{segment === "CASH" ? "Type an exact stock symbol to fetch the latest Groww quote and historical candles." : "Select a futures or option contract to load its quote, candles and technical indicators."}</p>}
+      {!normalized && <p role="status" className="text-sm text-muted">{segment === "CASH" ? "Type at least two stock-name or symbol characters and select a dropdown result to load Groww quotes and historical candles." : "Select a futures or option contract to load its quote, candles and technical indicators."}</p>}
       {normalized && !valid && <p role="alert" className="text-sm text-negative">Enter an exact stock trading symbol such as RELIANCE, TCS or M&amp;M.</p>}
       {loading && <p role="status" className="text-sm text-muted">Loading {normalized} quote, candles and indicators...</p>}
       {valid && current?.error && <p role="alert" className="rounded-xl border border-negative/25 bg-negative/5 p-4 text-sm text-negative">{current.error}</p>}
       {!!data?.omittedCandles && <p role="status" className="text-sm text-muted">Groww returned {data.omittedCandles} incomplete candle(s) with missing OHLC prices. These were omitted; the chart and indicators use only complete candles, without filling missing prices.</p>}
       {data && !data.candles.length && <p role="status" className="text-sm text-muted">Groww returned no candles for this stock and interval. The quote is available; chart and indicators are unavailable.</p>}
       <IndicatorPanel data={data} mode={mode} />
+      {displayData && <TechnicalVerdict key={`technical:${key}:${mode}`} data={displayData} mode={mode}
+        forecastData={forecastData} forecastLoading={valid && !forecastCurrent} forecastError={forecastCurrent?.error}
+        onSessionExpired={onSessionExpired} />}
       {displayData && <StockRecommendation key={`${key}:${mode}`} data={displayData} mode={mode} onSessionExpired={onSessionExpired} />}
       <PriceChart data={data} interval={interval} onInterval={(value) => { setInterval(value); setRevision((current) => current + 1); }} />
       <MarketContext data={displayData} />
