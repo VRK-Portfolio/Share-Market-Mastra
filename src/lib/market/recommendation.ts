@@ -3,6 +3,8 @@ import { marketRequestSchema } from "../groww/market-schemas.ts";
 import type { AnalysisMode, MarketAnalysis } from "./types.ts";
 import { fnoInstrumentSchema } from "../groww/instrument-schemas.ts";
 import type { FnoInstrument } from "../groww/instrument-schemas.ts";
+import { calculateTechnicalVerdict, indicatorAssessments, indicatorAssessmentSchema, indicatorSnapshot, indicatorSnapshotSchema } from "./technical-verdict.ts";
+export { indicatorNames, indicatorSnapshot, indicatorSnapshotSchema } from "./technical-verdict.ts";
 
 export const stockAnalysisModel = "google/gemini-3.8-flash";
 export const recommendationRequestSchema = marketRequestSchema.extend({
@@ -12,13 +14,6 @@ export const recommendationRequestSchema = marketRequestSchema.extend({
 
 const price = z.number().finite().positive();
 const explanation = z.string().trim().min(1).max(600);
-export const indicatorNames = ["VWAP", "RSI", "ATR", "EMA20", "EMA50", "MACD", "SUPERTREND"] as const;
-export const indicatorSnapshotSchema = z.object({
-  vwap: z.number().finite().nullable(), rsi: z.number().finite().nullable(), atr: z.number().finite().nullable(),
-  ema20: z.number().finite().nullable(), ema50: z.number().finite().nullable(),
-  macd: z.object({ value: z.number().finite(), signal: z.number().finite(), histogram: z.number().finite() }).nullable(),
-  supertrend: z.object({ value: z.number().finite(), direction: z.enum(["bullish", "bearish"]) }).nullable(),
-});
 const recommendationSchema = z.object({
   decision: z.enum(["BUY", "SELL", "HOLD"]),
   confidencePercent: z.number().int().min(0).max(100),
@@ -29,12 +24,6 @@ const recommendationSchema = z.object({
   supportLevels: z.array(price).max(3),
   resistanceLevels: z.array(price).max(3),
   rationale: z.array(explanation).min(1).max(6),
-  indicatorAssessments: z.array(z.object({
-    indicator: z.enum(indicatorNames),
-    signal: z.enum(["BULLISH", "BEARISH", "NEUTRAL", "UNAVAILABLE"]),
-    explanation,
-  })).length(indicatorNames.length).refine((items) => new Set(items.map((item) => item.indicator)).size === indicatorNames.length,
-    "Explain each indicator exactly once."),
   risks: z.array(explanation).min(1).max(6),
   invalidation: explanation,
   gtt: z.object({
@@ -99,6 +88,8 @@ export const recommendationResponseSchema = recommendationSchema.extend({
   omittedCandles: z.number().int().nonnegative(),
   riskRewardRatio: z.number().finite().positive().nullable(),
   indicatorSnapshot: indicatorSnapshotSchema,
+  indicatorAssessments: z.array(indicatorAssessmentSchema).length(7).refine((items) =>
+    new Set(items.map((item) => item.indicator)).size === 7, "Every indicator must have one code-derived assessment."),
 }).superRefine((value, context) => {
   validateLevels(value, value.mode, context, value.instrument?.instrumentType);
   if (value.segment === "FNO" ? value.mode === "CNC" || !value.instrument ||
@@ -110,13 +101,8 @@ export const recommendationResponseSchema = recommendationSchema.extend({
 
 export type StockRecommendation = z.infer<typeof recommendationResponseSchema>;
 
-export function indicatorSnapshot(analysis: MarketAnalysis) {
-  return indicatorSnapshotSchema.parse(analysis.technical);
-}
-
 export function stockAnalysisPrompt(analysis: MarketAnalysis, mode: AnalysisMode) {
-  const candles = analysis.candles.slice(-120);
-  const technical = analysis.technical;
+  const verdict = calculateTechnicalVerdict(analysis, mode);
   return JSON.stringify({
     mode,
     segment: analysis.segment ?? "CASH",
@@ -124,7 +110,7 @@ export function stockAnalysisPrompt(analysis: MarketAnalysis, mode: AnalysisMode
     horizon: mode === "MIS" ? "Intraday; close any position within the trading session."
       : mode === "NRML" ? "Overnight derivative scenario, bounded by the selected contract expiry."
       : "Delivery swing scenario, not a long-term fundamental valuation.",
-    task: "Build a conditional indicator-based price scenario. Explain every supplied indicator's actual values, how the signals agree or conflict, and how ATR and candle support/resistance justify entry, targets and stop-loss. Do not claim a guaranteed prediction.",
+    task: "Interpret precomputed indicator parameters and the rule-based verdict. Do not calculate indicators or repeat a separate explanation for each. Return your independent concise verdict, supported levels and key risks; explain any disagreement with the rules. No raw candles are supplied and no prediction is guaranteed.",
     requestedAt: new Date().toISOString(),
     symbol: analysis.symbol,
     exchange: analysis.exchange,
@@ -133,16 +119,17 @@ export function stockAnalysisPrompt(analysis: MarketAnalysis, mode: AnalysisMode
     quote: analysis.quote,
     coverage: {
       candleCount: analysis.candles.length,
-      candleSampleCount: candles.length,
+      candleSampleCount: 0,
       omittedCandles: analysis.omittedCandles ?? 0,
       firstCandleTime: analysis.candles[0]?.time ?? null,
       lastCandleTime: analysis.candles.at(-1)?.time ?? null,
     },
-    technical: {
-      vwap: technical.vwap, rsi: technical.rsi, atr: technical.atr,
-      ema20: technical.ema20, ema50: technical.ema50,
-      macd: technical.macd, supertrend: technical.supertrend,
+    technical: indicatorSnapshot(analysis),
+    ruleVerdict: {
+      decision: verdict.decision, entryPrice: verdict.entryPrice, targetPrices: verdict.targetPrices,
+      stopLoss: verdict.stopLoss, riskRewardRatio: verdict.riskRewardRatio, exitOnly: verdict.exitOnly,
+      supportLevels: verdict.supportLevels, resistanceLevels: verdict.resistanceLevels, reasons: verdict.reasons,
     },
-    candles,
+    signals: indicatorAssessments(analysis).map(({ indicator, signal }) => ({ indicator, signal })),
   });
 }

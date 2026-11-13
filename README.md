@@ -14,10 +14,16 @@ Open http://localhost:3000. Connect Groww with a generated access token to load 
 portfolio and search actual stock data. A server-side session secret and the
 appropriate Groww Trading API / market-data permissions are required.
 
+Development disables Turbopack's persistent filesystem cache so saved module
+exports cannot outlive changes to shared validation schemas. Production build
+caching is unchanged. If an already-running dev server reports an undefined
+schema export such as `cashInstrumentSearchSchema.safeParse`, restart
+`npm run dev` and reload the page to discard the old in-memory module graph.
+
 ## Features
 
 - Responsive Tailwind CSS layout with persistent light/dark themes.
-- Debounced exact-symbol search for NSE/BSE CASH stocks.
+- Debounced stock-name/symbol dropdown search for NSE/BSE CASH stocks.
 - Actual Groww quotes and 15m/1h/1D historical candles, with volume, hover OHLC
   and overlay toggles.
 - MIS/CNC display presets for technical indicator cards.
@@ -99,10 +105,25 @@ Connecting does not fetch or place orders.
 
 ### Actual stock search and analysis
 
-After connecting, type an exact exchange trading symbol (for example `RELIANCE`,
-`TCS` or `M&M`) into **Stock symbol**. The app waits 500 ms after typing before
-requesting data. Choose NSE or BSE and a 15m, 1h or 1D candle interval. Company-name
-autocomplete is not implemented. F&O uses the contract search described below.
+After connecting, type at least two company-name or symbol characters (for example
+`Reliance`, `TCS` or `Mahindra`) into **Stock name or symbol**. A dropdown searches
+Groww's actual instrument catalog after 400 ms, showing the company name, exact
+symbol and selected exchange. Click a match or use the arrow keys and Enter;
+Escape dismisses the dropdown. Quote/history requests start only after selecting
+a stock, not for partial symbols or company names. Choose NSE or BSE and a 15m,
+1h or 1D candle interval. F&O retains its separate contract search.
+
+`GET /api/groww/instruments?segment=CASH&q=Reliance&exchange=NSE` searches equity
+records by case-insensitive name/symbol, excludes index and derivative records,
+ranks exact/prefix matches first and returns up to 30 matches per page. Broad
+dropdown searches prompt you to type more characters. The authenticated endpoint
+uses the existing one-hour public-catalog cache without sending your token to
+the catalog host; missing names remain unavailable rather than being invented.
+The catalog can exceed 20 MB: its shared download/body-read timeout is 45 seconds,
+with a 60-second route execution budget on hosts that support it. Download timeouts
+return HTTP 504, and network, upstream HTTP or invalid-catalog failures return 502
+with safe `stage`, `failureType` and optional `upstreamStatus` diagnostics. These
+catalog errors retain your session and never substitute empty/sample results.
 
 `GET /api/groww/analysis?symbol=RELIANCE&exchange=NSE&interval=15minute` uses the
 saved session to call the official:
@@ -200,6 +221,82 @@ Options SELL means exit/avoid, never an uncovered option-writing setup.
 All F&O GTT suggestions are disabled; analysis itself places no orders.
 The separate order-review action is described below; it does not execute GTT.
 
+### Technical verdict (no LLM)
+
+Before the optional Gemini report, the dashboard calculates a deterministic
+BUY/SELL/HOLD verdict from the existing TypeScript indicators. This requires
+no Google key, model call or model tokens. It also supports the existing explicitly
+confirmed order/paper-trade review without first calling Gemini.
+
+The conservative rules require all of:
+
+- BUY: price above EMA20 and EMA50, EMA20 above EMA50, RSI **55-70** inclusive,
+  MACD line above signal with positive histogram, and bullish SuperTrend with
+  price above its trend line. MIS also requires price above session VWAP.
+- SELL: the inverse EMA, MACD and SuperTrend conditions, RSI **30-45** inclusive,
+  and price below VWAP for MIS. CNC and CE/PE SELL remain **exit/avoid only**,
+  with no new short entry, targets or stop. FUT SELL may suggest a short.
+- Neutral/conflicting signals, missing required indicators, fewer than 50
+  complete candles, nonpositive ATR/price, expired/mismatched contracts or
+  invalid timestamps produce HOLD with explicit reasons and no trade levels.
+  ATR measures volatility, not direction; RSI extremes alone never imply reversal.
+- MIS requires a quote trade within **60 seconds**, quote/candles from the
+  current IST calendar date, and candle/snapshot age within **two intervals**.
+  CNC/NRML allow quote/candle/snapshot ages up to **three calendar days** to
+  accommodate weekends; this is a freshness policy, not a trading-calendar model.
+  Times more than five seconds ahead of the evaluation clock are rejected.
+
+Entry is the current reference price rounded to tick size. Risk distance is
+**at least 1.5xATR**, rounded outward; targets are **2R and 3R** from rounded entry.
+Reward/risk is calculated from the rounded first target and stop, not a profit
+probability. F&O uses verified contract tick size; CASH suggestions use paise
+precision and the order review still checks actual exchange tick size. Plans
+whose positive, directional levels cannot be represented safely become HOLD.
+Recent 20-candle low/high are shown as observed context, not guaranteed support
+or target forecasts.
+
+Streaming can change the reference-price comparisons and scenario levels;
+indicators remain explicitly labeled REST snapshots and need a market refresh.
+Freshness is reevaluated every five seconds even if no ticks arrive. Opening order
+review captures its analysis side/price so later ticks cannot silently change the
+reviewed instruction. No order, GTT, stop or target is placed automatically.
+
+Each indicator has an **i** button in the indicator panel, technical verdict and
+Gemini input-evidence cards. Hover or keyboard focus opens a tooltip; clicking
+pins it for touch users. Escape, blur or an outside click dismisses it. Tooltips
+show the **unrounded supplied values** (including all three MACD fields and
+SuperTrend line/direction), periods, units and interpretation rules. They do not
+invent an ideal indicator value or estimate missing data. F&O OI/change/IV cards
+also explain the provider-reported values without guessing IV units.
+
+### Next 15-30 minute scenarios (no LLM)
+
+The technical-verdict section also shows conditional 15- and 30-minute price
+ranges. A separate validated **15-minute analysis snapshot** is fetched alongside
+hourly/daily chart data; when the chart is already 15-minute, its snapshot is
+reused with no duplicate request. Refresh updates both snapshots. Selection changes
+abort outstanding requests; errors/mismatched responses are visible and never
+fall back to a different symbol, contract or higher-timeframe ATR.
+
+These are transparent **heuristic continuation scenarios**, not calibrated
+prediction/confidence intervals, guaranteed future prices or the 2R/3R targets:
+
+- Bullish indicator agreement: price - 0.5xATR to price + ATR at 15 minutes.
+- Bearish agreement: price - ATR to price + 0.5xATR.
+- Neutral/conflicting direction with otherwise valid data: price +/-ATR.
+- At 30 minutes, distances scale by sqrt(2). This is a modeling assumption, not
+  a statistically validated forecast. Ranges can be exceeded in either direction.
+- Bounds round outward to contract tick size (CASH uses paise precision).
+  Nonpositive/unrepresentable bounds show unavailable rather than fabricated prices.
+
+All scenarios require the stricter MIS data-quality/freshness checks, regardless
+of the selected trade product. They are limited to regular weekday NSE/BSE hours
+(09:15-15:30 IST); each horizon becomes unavailable if it crosses session close.
+This is not a holiday/special-session calendar model. F&O estimates are selected
+contract prices/premiums, not forecasts of the underlying or option-writing advice.
+The reference quote can stream, but 15-minute ATR/indicators remain labeled
+snapshots. No polling, Gemini calls, orders or protective exits are triggered.
+
 ### Gemini stock analysis
 
 Set `GOOGLE_GENERATIVE_AI_API_KEY` (or `GOOGLE_API_KEY`) in `.env.local` and restart
@@ -215,26 +312,96 @@ or Groww disconnects. Model failures do not hide market data.
 `{ "symbol": "KALYANKJIL", "exchange": "NSE", "interval": "15minute", "mode": "MIS" }`.
 It requires a Groww session, rejects cross-origin requests, and refetches validated
 quote/history analysis on the server instead of trusting client-supplied prices.
-Only the public quote, latest 120 complete candles, current indicator values and
-coverage/timestamps are sent to Google. Indicators use all complete candles.
+Only the public quote, verified contract metadata, precomputed indicator values,
+code-derived signals, rule-based verdict/levels and coverage/timestamps are sent
+to Google. **No raw candle arrays or chart overlays** are sent. Indicators still
+use all complete candles; `candleSampleCount` is now zero.
 Tokens, cookies, holdings and positions are never included in the model prompt.
 Each button-triggered call may incur Google API charges. Streaming ticks do not
 change an existing report; its reference price and timestamp remain visible.
 There is no persistent conversation memory.
+
+### Trade cost / shares / GTT calculator
+
+The bottom of each technical result and completed Gemini report has **Calculate
+cost / shares / GTT**. It opens an accessible dialog prefilled from that specific
+result, capturing prices on open so streaming cannot overwrite your edits.
+Calculation is entirely local: budgets, quantities and fees are not sent to
+Google, Groww or the order journal, and no order/GTT is submitted.
+
+- Manual quantity or full-notional budget sizing; budget sizing finds the maximum
+  whole shares/contract lots affordable **including entry charges**, capped at
+  1,000,000 units. F&O uses verified lot/tick metadata.
+- Editable execution price, target, stop and eligible entry trigger, with buttons
+  for the result's alternative targets. Missing HOLD/exit-only trade levels
+  are not invented; reference price may be used only for explicit cost illustration.
+- Shows quantity/lots, turnover, entry fees/cash-flow estimate, unused budget,
+  gross/net target and stop P/L, fee-adjusted reward/risk and approximate break-even.
+  Fees are itemized by entry, target exit and stop exit: brokerage, STT,
+  exchange, IPFT, SEBI, stamp duty, DP and GST.
+- A prominent **Overall estimated profit / loss** summary shows the net target
+  and stop outcomes for the entire selected quantity, with gross P/L and total
+  round-trip fees/taxes underneath. Profit/loss colors follow the net result,
+  including a target that loses money after charges. These are alternative exit
+  scenarios, never added together; unavailable levels/acquisition costs are not
+  presented as zero profit. They are not guaranteed outcomes or maximum losses.
+- Futures turnover is **not** reported as a cash debit or margin requirement.
+  MIS/F&O budget sizing assumes full notional/premium, not leveraged buying power,
+  SPAN/exposure margin or available funds. CNC/options SELL is owned-inventory
+  exit-only, with no invented acquisition cost, P/L or new short/GTT plan.
+- GTT is an **advisory preview only for CASH CNC BUY**, with quantity, entry
+  trigger, planned execution/limit-cost assumption, target trigger and stop trigger.
+  Verify broker eligibility, trigger direction, all exit limit prices, validity
+  and separate protection. No linked exits/OCO, execution or GTT API is implemented.
+
+Fee assumptions are displayed/editable and were checked on **13 November 2026**:
+
+- [Groww brokerage](https://groww.in/help/stocks,-f&o,-ipo-&-mtf/searchable/how-much-is-the-brokerage):
+  equity lower of Rs20/0.1%, with minimum lower of Rs5/2.5% of value; F&O Rs20
+  per executed order. A flat per-order override is available.
+- [NSE March 2026 circular](https://nsearchives.nseindia.com/content/circulars/FA73061.pdf):
+  transaction percentages 0.0030699 CASH, 0.0018299 FUT and 0.0355299 options
+  (premium turnover), with IPFT 0.0000001% each side. This avoids adding obsolete
+  IPFT rates to the revised transaction rates.
+- [NSE April 2026 STT circular](https://nsearchives.nseindia.com/content/circulars/FATAX73524.pdf):
+  futures SELL 0.05% and options SELL 0.15%. Older Groww F&O pricing tables still
+  show pre-April rates and are not used for these defaults.
+- [Groww equity/DP/GST](https://groww.in/pricing): CASH CNC STT 0.1% each side;
+  MIS 0.025% sell-only; buy-only stamp 0.015% CNC / 0.003% MIS.
+  DP default Rs20 before GST for delivery sells of at least Rs100, Rs3.5 below
+  Rs100 (depository-only); account-specific rates can be edited. Derivative buy
+  stamp is 0.002% FUT / 0.003% options.
+- GST 18% is applied to brokerage, exchange, IPFT, SEBI and DP, **not STT/stamp**.
+  SEBI turnover is 0.0001% each side.
+- BSE transaction defaults are group/contract-dependent (CASH 0.00375%, FUT 0%,
+  options 0.0325% from Groww pricing). **BSE IPFT is unverified and requires an
+  explicit confirmed input**; unknown fees are never silently assumed zero.
+
+Amounts round to paise; STT rounds to whole rupees per estimated leg. Actual
+client-day aggregation and contract-note rounding may differ. Break-even is
+explicitly approximate, assuming exit fees at the entry price. Estimates assume
+one full executed order per leg, normal resident brokerage and pre-expiry closing.
+Personal income/capital-gains tax, slippage, spreads, impact, recurring API fees,
+MTF/NRI/UPI-mandate schemes, interest, penalties, square-off fees, option exercise
+and physical-settlement charges are excluded. Verify all rates against your broker.
+
+### Gemini recommendation output and limitations
 
 Structured output includes BUY/SELL/HOLD, subjective confidence (not a profit
 probability), conditional entry/targets/stop-loss, support/resistance, evidence,
 risks, invalidation and optional GTT trigger suggestions. The response identifies
 the stock, mode, model, snapshot/reference price, coverage and server-calculated
 first-target reward/risk ratio. This snapshot may be newer than the chart snapshot.
-Gemini must assess VWAP, RSI, ATR, EMA20, EMA50, MACD and SuperTrend individually,
-using their actual values to explain momentum, trend, volatility and signal
-confluence/conflicts. The dashboard shows these explanations alongside a
-server-derived `indicatorSnapshot`, not model-invented values. Missing indicators
-must be labeled UNAVAILABLE; inconsistent evidence is rejected. When every
+Gemini interprets the precomputed parameters and may explain disagreement with
+the initial rules. It does **not** calculate indicator values or generate seven
+repeated indicator explanations. The response retains `indicatorAssessments`
+and `indicatorSnapshot`, but both are derived by application code and are labeled
+as such in the report. Missing indicators are labeled UNAVAILABLE. When every
 indicator is missing, no actionable trade prediction is accepted.
 Invalid directional levels are rejected rather than displayed. Generation uses
-one model step, no provider retries and a 45-second Mastra execution budget.
+one model step, no provider retries, a 45-second Mastra execution budget and a
+**2,048-output-token cap** (previously 4,096). Compact input/output reduces token
+usage, not the provider's per-token rate; optional Gemini calls still incur charges.
 
 MIS recommendations are intraday-only; a SELL scenario requires broker shorting
 eligibility. CNC SELL means exit if already held or avoid buying, **not** a naked
@@ -367,6 +534,13 @@ Initial 401 responses clear the session; 403 preserves it. Missing worker setup
 returns 503, connection startup is bounded to 25 seconds, and worker errors
 are sanitized. Streams and workers close when the selection changes, the browser
 disconnects or Groww disconnects. Interval/mode changes do not create extra feeds.
+
+Startup JSON responses and SSE error events include safe `stage`, `failureType`
+and, when available, `upstreamCode` diagnostics. Stages distinguish socket-token
+creation, websocket connection, subscription, tick decoding and disconnection.
+When troubleshooting, share only this error response, never request headers,
+session cookies, access tokens or environment-file contents. Raw provider
+messages and worker tracebacks are not forwarded.
 
 **Deployment:** use a persistent Node.js host with Python, installed SDK dependencies
 and `scripts/groww/feed.py` available at the application root. Short-lived serverless

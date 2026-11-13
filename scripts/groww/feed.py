@@ -4,9 +4,43 @@ import json
 import logging
 import math
 import os
+import re
 import signal
 import sys
 from typing import Any
+
+
+class FeedFailure(Exception):
+    def __init__(self, stage: str, cause: Exception) -> None:
+        super().__init__("Groww feed operation failed")
+        self.stage = stage
+        self.cause = cause
+
+
+def failure_message(error: Exception | None, stage: str, token: str = "") -> dict[str, Any]:
+    code = error_status(error)
+    name = type(error).__name__
+    failure_type = (
+        "missing-dependency" if isinstance(error, ModuleNotFoundError)
+        else "authentication" if code in (401, 403)
+        else "rate-limit" if code == 429
+        else "timeout" if code == 504 or "Timeout" in name
+        else "tls" if name in ("SSLError", "SSLCertVerificationError", "ClientConnectorCertificateError", "ClientConnectorSSLError")
+        else "invalid-tick" if stage == "decoding"
+        else "invalid-response" if isinstance(error, (KeyError, ValueError, TypeError)) and stage == "socket-token"
+        else "invalid-config" if stage == "startup" and isinstance(error, (KeyError, ValueError, TypeError))
+        else "disconnected" if stage == "disconnected"
+        else "sdk-failure" if stage == "socket-token"
+        else "connection-failed" if stage == "connection"
+        else "subscription-failed" if stage == "subscription"
+        else "worker-failure"
+    )
+    message: dict[str, Any] = {"type": "error", "code": 504 if failure_type == "timeout" else code,
+                               "stage": stage, "failureType": failure_type}
+    upstream_code = getattr(error, "code", None)
+    if isinstance(upstream_code, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", upstream_code) and (not token or token not in upstream_code):
+        message["upstreamCode"] = upstream_code
+    return message
 
 
 def emit(message: dict[str, Any]) -> None:
@@ -62,10 +96,14 @@ async def run(config: dict[str, Any]) -> None:
         keys=nacl.signing.SigningKey(seed),
         seed=nkeys.encode_seed(seed, nkeys.PREFIX_BYTE_USER),
     )
-    credentials = GrowwAPI(access_token).generate_socket_token(key_pair)
-    jwt = credentials["token"]
-    if not isinstance(jwt, str) or not jwt:
-        raise ValueError("Invalid feed credentials")
+    try:
+        credentials = GrowwAPI(access_token).generate_socket_token(key_pair)
+        jwt = credentials["token"]
+        if not isinstance(jwt, str) or not jwt:
+            raise ValueError("Invalid feed credentials")
+    except Exception as error:
+        key_pair.wipe()
+        raise FeedFailure("socket-token", error) from None
     topic = (FeedConstants.get_live_index_topic if index else FeedConstants.get_live_price_topic)(
         segment, exchange, exchange_token,
     )
@@ -76,10 +114,15 @@ async def run(config: dict[str, Any]) -> None:
     pending_tick: dict[str, Any] | None = None
     client = Client()
 
-    async def failed(_error: Exception | None = None) -> None:
+    stage = "connection"
+
+    async def failed(_error: Exception | None = None, failure_stage: str | None = None) -> None:
         if not closing and not stopped.is_set():
-            emit({"type": "error", "code": error_status(_error)})
+            emit(failure_message(_error, failure_stage or stage, access_token))
             stopped.set()
+
+    async def disconnected() -> None:
+        await failed(failure_stage="disconnected")
 
     async def tick(message: Any) -> None:
         nonlocal pending_tick
@@ -92,8 +135,8 @@ async def run(config: dict[str, Any]) -> None:
                 emit(normalized)
             else:
                 pending_tick = normalized
-        except Exception:
-            await failed()
+        except Exception as error:
+            await failed(error, "decoding")
 
     try:
         await client.connect(
@@ -106,16 +149,23 @@ async def run(config: dict[str, Any]) -> None:
             ping_interval=15,
             max_outstanding_pings=2,
             error_cb=failed,
-            disconnected_cb=failed,
-            closed_cb=failed,
+            disconnected_cb=disconnected,
+            closed_cb=disconnected,
         )
+        stage = "subscription"
         await client.subscribe(topic.get_topic(), cb=tick)
         await client.flush(timeout=10)
+        if stopped.is_set():
+            return
         emit({"type": "connected"})
         ready = True
         if pending_tick is not None:
             emit(pending_tick)
+        stage = "connection"
         await stopped.wait()
+    except Exception as error:
+        if not stopped.is_set():
+            raise FeedFailure(stage, error) from None
     finally:
         closing = True
         if not client.is_closed:
@@ -126,14 +176,21 @@ async def run(config: dict[str, Any]) -> None:
 def main() -> int:
     logging.disable(logging.CRITICAL)
     signal.signal(signal.SIGTERM, lambda *_args: sys.exit(0))
+    token = ""
     try:
         config = json.loads(sys.stdin.readline())
+        if not isinstance(config, dict):
+            raise ValueError("Invalid feed configuration")
+        token = config.get("accessToken", "")
+        if not isinstance(token, str):
+            token = ""
         # SDK output is never forwarded to the browser or application logs.
         with contextlib.redirect_stdout(sys.stderr):
             asyncio.run(run(config))
         return 0
     except Exception as error:
-        emit({"type": "error", "code": error_status(error)})
+        emit(failure_message(error.cause, error.stage, token) if isinstance(error, FeedFailure)
+             else failure_message(error, "startup", token))
         return 1
 
 

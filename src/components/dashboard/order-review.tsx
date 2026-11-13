@@ -7,9 +7,13 @@ import type { OrderPreview, OrderResult, OrderSelection } from "../../lib/groww/
 import type { StockRecommendation } from "../../lib/market/recommendation";
 import { money } from "./format";
 
-export function OrderReview({ recommendation, onSessionExpired }: {
-  recommendation: StockRecommendation; onSessionExpired: () => void;
+type OrderRecommendation = Pick<StockRecommendation, "decision" | "instrument" | "entryPrice" | "referencePrice" |
+  "symbol" | "exchange" | "segment" | "mode"> & { snapshotAt: string | null };
+
+export function OrderReview({ recommendation: currentRecommendation, onSessionExpired }: {
+  recommendation: OrderRecommendation; onSessionExpired: () => void;
 }) {
+  const [recommendation, setRecommendation] = useState(currentRecommendation);
   const dialog = useRef<HTMLDialogElement>(null);
   const pending = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -22,7 +26,7 @@ export function OrderReview({ recommendation, onSessionExpired }: {
   const [result, setResult] = useState<OrderResult | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [attempted, setAttempted] = useState(false);
-  const eligible = recommendation.decision !== "HOLD";
+  const eligible = currentRecommendation.decision !== "HOLD";
   const canReviewAgain = !!result && (result.execution === "PAPER" && result.state !== "UNKNOWN" ||
     result.state === "NOT_SUBMITTED" || !!result.brokerStatus &&
     ["REJECTED", "FAILED", "CANCELLED", "COMPLETED", "EXECUTED", "DELIVERY_AWAITED"].includes(result.brokerStatus));
@@ -91,17 +95,23 @@ export function OrderReview({ recommendation, onSessionExpired }: {
 
   return <div className="mt-5 rounded-xl border border-line bg-inset p-4">
     <h3 className="text-xs font-semibold">Order actions</h3>
-    <p className="mt-2 text-xs text-muted">AI levels are conditional, not instructions to trade. Review an entry/exit order yourself. Targets, stop-loss and GTT are not submitted or linked. MARKET orders have no price guarantee.</p>
-    <button type="button" className="secondary-button mt-3 text-xs" disabled={!eligible}
-      onClick={() => dialog.current?.showModal()}>Review order / paper trade</button>
-    {!eligible && <p className="mt-2 text-xs text-muted">HOLD has no actionable order. Run a new analysis before reviewing a trade.</p>}
+    <p className="mt-2 text-xs text-muted">Analysis levels are conditional, not instructions to trade. Review an entry/exit order yourself. Targets, stop-loss and GTT are not submitted or linked. MARKET orders have no price guarantee.</p>
+    <button type="button" className="secondary-button mt-3 text-xs" disabled={!eligible && !preview}
+      onClick={() => {
+        if (!preview && !attempted) {
+          setRecommendation(currentRecommendation);
+          setLimitPrice(String(currentRecommendation.entryPrice ?? currentRecommendation.referencePrice));
+        }
+        dialog.current?.showModal();
+      }}>Review order / paper trade</button>
+    {!eligible && <p className="mt-2 text-xs text-muted">HOLD has no new actionable order. Refresh market data or run a new analysis before reviewing a trade.</p>}
     {preview && <p className="mt-2 break-all font-mono text-xs">Order reference: {preview.reference} · {preview.order.execution}{result ? ` · ${result.brokerStatus ?? result.state}` : ""}</p>}
     <dialog ref={dialog} aria-labelledby="order-review-title"
       className="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-2xl border border-line bg-panel p-6 text-foreground shadow-xl backdrop:bg-black/50"
       onCancel={(event) => { if (busy) event.preventDefault(); }}>
       <h2 id="order-review-title" className="text-lg font-semibold">Review {recommendation.decision} order</h2>
       <p className="mt-2 text-sm">{recommendation.symbol} · {recommendation.exchange} · {recommendation.segment} · {recommendation.mode}</p>
-      <p className="mt-2 text-xs text-muted">Gemini reference {money(recommendation.referencePrice)} from {new Date(recommendation.snapshotAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST. Review fetches a new quote and instrument metadata. This is a single DAY-valid order, not a bracket order.</p>
+      <p className="mt-2 text-xs text-muted">Analysis reference {money(recommendation.referencePrice)} from {recommendation.snapshotAt ? new Date(recommendation.snapshotAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) : "an unavailable snapshot timestamp"} IST. Review fetches a new quote and instrument metadata. This is a single DAY-valid order, not a bracket order.</p>
       <form onSubmit={review} className="mt-4 space-y-3">
         <fieldset disabled={busy || !!preview || attempted} className="grid gap-3 sm:grid-cols-2">
           <label className="field-label">Execution<select aria-label="Order execution" className="field mt-1 w-full" value={execution} onChange={(event) => setExecution(event.target.value === "LIVE" ? "LIVE" : "PAPER")}><option value="PAPER">Paper trading (no real order)</option><option value="LIVE">Real Groww order</option></select></label>
@@ -129,8 +139,10 @@ export function OrderReview({ recommendation, onSessionExpired }: {
       </div>}
       {result && <div role="status" className="mt-4 rounded-xl border border-line p-4 text-sm"><p className="font-semibold">{result.execution} · {result.brokerStatus ?? result.state}</p><p className="mt-2">{result.message}</p>{result.brokerOrderId && <p className="mt-2 break-all font-mono text-xs">Groww order: {result.brokerOrderId}</p>}{result.simulatedPrice && <p className="mt-2">Simulated fill: {money(result.simulatedPrice)}</p>}</div>}
       {error && <p role="alert" className="mt-3 text-sm text-negative">{error}</p>}
-      {canReviewAgain && <button type="button" className="secondary-button mt-4 text-sm" disabled={busy} onClick={() => {
+      {canReviewAgain && <button type="button" className="secondary-button mt-4 text-sm" disabled={busy || !eligible} onClick={() => {
         setPreview(null); setResult(null); setAttempted(false); setConfirmed(false); setError(""); setExecution("PAPER");
+        setRecommendation(currentRecommendation);
+        setLimitPrice(String(currentRecommendation.entryPrice ?? currentRecommendation.referencePrice));
       }}>Start new order review</button>}
       <div className="mt-4 flex justify-end gap-3">{attempted && <button type="button" className="secondary-button text-sm" disabled={busy} onClick={() => { void checkStatus(); }}>Check order status</button>}<button type="button" className="secondary-button text-sm" disabled={busy} onClick={() => dialog.current?.close()}>Close</button></div>
     </dialog>

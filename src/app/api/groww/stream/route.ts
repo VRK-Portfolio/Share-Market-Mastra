@@ -23,8 +23,8 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     const failure = error instanceof GrowwFeedError ? error : new GrowwFeedError(502);
-    console.error("Unable to start Groww streaming.", { status: failure.status });
-    return Response.json({ error: failure.message }, {
+    console.error("Unable to start Groww streaming.", { status: failure.status, ...failure.diagnostic });
+    return Response.json({ error: failure.message, ...failure.diagnostic }, {
       status: failure.status,
       headers: failure.status === 401 ? { ...sessionResponseHeaders, "Set-Cookie": clearSessionCookie() } : sessionResponseHeaders,
     });

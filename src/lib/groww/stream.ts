@@ -1,18 +1,26 @@
 import childProcess from "node:child_process";
 import { delimiter, resolve } from "node:path";
 import { workerMessageSchema } from "./live-schemas.ts";
-import type { FeedInstrument } from "./live-schemas.ts";
+import type { FeedDiagnostic, FeedInstrument } from "./live-schemas.ts";
 
 export class GrowwFeedError extends Error {
   readonly status: number;
-  constructor(status: number) {
-    super(status === 401 ? "Your Groww session expired. Connect again."
+  readonly diagnostic: FeedDiagnostic;
+  constructor(status: number, diagnostic: FeedDiagnostic = {}) {
+    const hint = diagnostic.failureType === "tls" ? " The Python worker could not verify Groww's TLS connection."
+      : diagnostic.stage === "socket-token" ? " Groww socket-token creation failed."
+      : diagnostic.stage === "connection" ? " The Groww websocket/NATS connection failed."
+      : diagnostic.stage === "subscription" ? " Groww could not start the selected price subscription."
+      : diagnostic.stage === "decoding" ? " Groww returned a price tick the worker could not validate."
+      : "";
+    super((status === 401 ? "Your Groww session expired. Connect again."
       : status === 403 ? "Groww denied streaming access. Check your Trading API feed permissions."
       : status === 429 ? "Groww's streaming connection limit was reached. Retry later."
       : status === 503 ? "Groww streaming is not configured. Run npm run setup:groww-feed."
       : status === 504 ? "The Groww streaming connection timed out. Reconnect the feed."
-      : "The Groww price stream failed. Reconnect the feed; snapshot data remains available.");
+      : "The Groww price stream failed. Reconnect the feed; snapshot data remains available.") + hint);
     this.status = status;
+    this.diagnostic = diagnostic;
   }
 }
 
@@ -44,9 +52,9 @@ export function startGrowwFeed(token: string, instrument: FeedInstrument, signal
       clearTimeout(startup);
       if (heartbeat) clearInterval(heartbeat);
       signal.removeEventListener("abort", abort);
-      if (error && error.status !== 499) console.error("Groww streaming stopped.", { status: error.status });
+      if (error && error.status !== 499) console.error("Groww streaming stopped.", { status: error.status, ...error.diagnostic });
       if (!ready) reject(error ?? new GrowwFeedError(499));
-      else if (error && error.status !== 499 && !canceled) send({ ...identity, type: "error", code: error.status, error: error.message });
+      else if (error && error.status !== 499 && !canceled) send({ ...identity, ...error.diagnostic, type: "error", code: error.status, error: error.message });
       if (!canceled) controller.close();
       if (worker && worker.exitCode === null) {
         worker.kill("SIGTERM");
@@ -82,7 +90,13 @@ export function startGrowwFeed(token: string, instrument: FeedInstrument, signal
           buffer = buffer.slice(boundary + 1);
           try {
             const message = workerMessageSchema.parse(JSON.parse(line));
-            if (message.type === "error") { finish(new GrowwFeedError(message.code)); return; }
+            if (message.type === "error") {
+              finish(new GrowwFeedError(message.code, {
+                stage: message.stage, failureType: message.failureType,
+                upstreamCode: message.upstreamCode?.includes(token) ? undefined : message.upstreamCode,
+              }));
+              return;
+            }
             if (message.type === "connected") {
               if (!ready) {
                 ready = true;
