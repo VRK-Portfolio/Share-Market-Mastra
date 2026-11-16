@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - order-data:/app/.groww-orders
+
+volumes:
+  order-data:

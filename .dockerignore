@@ -1,0 +1,15 @@
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!next.config.ts
+!next-env.d.ts
+!tsconfig.json
+!public/
+!public/**
+!src/
+!src/**
+!scripts/
+!scripts/groww/
+!scripts/groww/feed.py
+!scripts/groww/requirements.txt
