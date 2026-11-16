@@ -12,7 +12,7 @@ import { StockRecommendation } from "./stock-recommendation";
 import { useLiveQuote } from "./use-live-quote";
 import { applyLiveTick } from "../../lib/groww/live-schemas";
 import { TechnicalVerdict } from "./technical-verdict";
-import { TopPicks } from "./top-picks";
+import { MarketMovers } from "./market-movers";
 import { scenarioInstrument } from "../../lib/market/scenario-alerts";
 import type { ScenarioAlertController } from "./use-scenario-alerts";
 
@@ -126,14 +126,14 @@ export function LiveStockAnalysis({ onSessionExpired, scenarioAlerts }: {
 
   return (
     <div className="market-workspace grid items-start gap-4 xl:grid-cols-[20rem_minmax(0,1fr)] 2xl:grid-cols-[22rem_minmax(0,1fr)]">
-      <aside className="min-w-0" aria-label="Today's stock screening">
-      <TopPicks onSessionExpired={onSessionExpired} onSelect={(pick) => {
+      <aside className="min-w-0" aria-label="Today's gainers and losers">
+      <MarketMovers onSessionExpired={onSessionExpired} onSelect={(stock) => {
         setSegment("CASH");
         setContract(null);
-        setSymbol(pick.symbol);
-        setExchange(pick.exchange);
-        setInterval(pick.interval);
-        setMode(pick.mode);
+        setSymbol(stock.symbol);
+        setExchange(stock.exchange);
+        setInterval("15minute");
+        setMode("MIS");
         setRevision((value) => value + 1);
         analysisRef.current?.focus({ preventScroll: true });
         analysisRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });

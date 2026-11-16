@@ -3,7 +3,7 @@ import { calculateTechnicalVerdict, indicatorNames } from "./technical-verdict.t
 import type { MarketAnalysis } from "./types.ts";
 import { stockSymbolSchema } from "../groww/instrument-schemas.ts";
 
-export const topPicksUniverse = ["RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "SBIN", "LT", "ITC"] as const;
+export { marketMoversUniverse as topPicksUniverse } from "./market-movers.ts";
 export const topPickSchema = z.object({
   symbol: stockSymbolSchema,
   exchange: z.literal("NSE"),

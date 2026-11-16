@@ -14,6 +14,22 @@ Open http://localhost:3000. Connect Groww with a generated access token to load 
 portfolio and search actual stock data. A server-side session secret and the
 appropriate Groww Trading API / market-data permissions are required.
 
+For Docker-based development with Python streaming dependencies and hot reload,
+create `.env.production` as described in [Persistent Docker deployment](#persistent-docker-deployment-true-streaming),
+then run `npm run docker:dev`. Open http://localhost:3000. Stop it with Ctrl+C or
+`npm run docker:dev:stop`. The development override bind-mounts the source while
+keeping Linux dependencies and Next.js build output in container-only volumes.
+It uses a separate Compose project and order-data volume from production.
+Do not run development and production containers on port 3000 at the same time.
+Rerun `npm run docker:dev` after dependency changes to rebuild and renew dependency
+volumes. Both Docker modes read runtime configuration from `.env.production`;
+development explicitly sets `NODE_ENV=development` for hot reload and local HTTP.
+
+On Vercel, use `npm run vercel-build` as the Build Command (the normal
+`npm run build` also works). Vercel cannot execute these Docker scripts or run this
+app's Python streaming worker; use the persistent Docker deployment for true
+streaming. No Docker command should be placed in Vercel's Build Command.
+
 Development disables Turbopack's persistent filesystem cache so saved module
 exports cannot outlive changes to shared validation schemas. Production build
 caching is unchanged. If an already-running dev server reports an undefined
@@ -27,7 +43,7 @@ schema export such as `cashInstrumentSearchSchema.safeParse`, restart
 - Actual Groww quotes and 15m/1h/1D historical candles, with volume, hover OHLC
   and overlay toggles.
 - MIS/CNC display presets for technical indicator cards.
-- Today's rule-qualified intraday and carry-forward picks, with click-to-analyze.
+- Today's gainers and losers among tracked NSE stocks, with click-to-analyze.
 - Button-triggered Mastra / Google Gemini technical recommendations, target and
   stop-loss scenarios, per-indicator evidence, support/resistance and advisory delivery GTT triggers.
 - Reviewed PAPER or LIVE Groww DAY orders for CASH and F&O, with explicit confirmation.
@@ -171,21 +187,36 @@ error rather than claiming a save, and invalid stored records are not overwritte
 without an explicitly confirmed reset. Clearing browser storage deletes alerts.
 Saved ranges are heuristic scenarios, not calibrated forecasts or guaranteed prices.
 
-The desktop workspace uses a picks sidebar and places the chart/indicator cards
+The desktop workspace uses a gainers/losers sidebar and places the chart/indicator cards
 beside the technical verdict at wide-screen sizes (optimized for 1920 x 1080).
 Stock selection and quote stay above the analysis. Portfolio tables, screened-stock
 diagnostics, full indicator evidence, optional Gemini analysis and order/calculator
 tools are expandable rather than stacked open. Expanding a section does not remount
 its contents or trigger model calls/orders. Market-data errors remain visible.
-Smaller screens stack the columns; long expanded picks lists scroll within the
+Smaller screens stack the columns; long stock lists scroll within the
 desktop sidebar. Detailed views may still need scrolling when expanded.
 
-**Top stock picks for today** loads automatically after connecting Groww.
-`GET /api/groww/top-picks` screens a fixed NSE CASH universe: RELIANCE, HDFCBANK,
-ICICIBANK, INFY, TCS, SBIN, LT and ITC. It uses the same validated quote/history
-loader as individual stock analysis, with two workers, per-analysis 15-second
-timeouts and an overall 45-second deadline. **Refresh picks** rescans; there is
-no automatic polling or sample fallback.
+**Today's gainers & losers** loads automatically after connecting Groww.
+`GET /api/groww/market-movers` fetches validated Groww quotes for the existing
+tracked NSE CASH universe: RELIANCE, HDFCBANK, ICICIBANK, INFY, TCS, SBIN, LT and
+ITC. This is not a whole-market ranking. Gainers are sorted by descending day
+percentage change versus previous close; losers by ascending percentage change.
+All matching stocks are listed; unchanged stocks are counted separately.
+Only quotes with valid last trades on today's IST date are included, so before
+trading, on holidays or when no current-date quotes exist, the lists can be empty.
+Unavailable/invalid quotes and previous-date trades have explicit exclusion warnings;
+total upstream failure returns an error. Each stock shows LTP, absolute/percentage
+day change and last-trade time, labeled stale after 60 seconds. A list from a
+previous date is hidden until refreshed.
+
+**Refresh list** fetches a new snapshot with two workers, per-quote 15-second
+timeouts and an overall 45-second deadline. No candles, technical filters,
+automatic polling, sample fallback, model calls or orders are involved.
+Clicking a stock selects CASH/NSE, MIS and 15-minute candles, then loads fresh
+individual analysis. A gainer/loser is not a BUY/SELL recommendation.
+
+The legacy `GET /api/groww/top-picks` technical-screening endpoint remains available
+for API consumers, but is no longer used by the dashboard sidebar.
 
 All historical-candle requests from screening and individual analysis share a
 per-token server-process queue: only one is in flight, and starts are spaced at
@@ -200,7 +231,7 @@ not automatically retried. Wait for the displayed cooldown before refreshing.
 Separate server instances or other apps using the same account still consume
 Groww's upstream limits; this in-memory queue does not coordinate those clients.
 
-Each mode shows at most three qualifying setups ranked by approximate
+The legacy top-picks API returns at most three qualifying setups per mode ranked by approximate
 reported-session traded value (LTP times reported volume), not predicted profit
 or a whole-market ranking. Intraday uses 15-minute candles and the existing MIS
 freshness/indicator-agreement rules, including VWAP; bullish BUY and conditional
@@ -209,21 +240,17 @@ rules, and lists only long BUY setups, never overnight cash shorts. Missing
 quote volume, stale data, insufficient history or conflicting indicators exclude a
 stock. No qualifying setups means an explicit empty state, not forced picks.
 Incomplete current-session candle volume also prevents MIS VWAP confirmation;
-CNC does not require VWAP. Each mode shows a separate clickable **Screened stocks**
+CNC does not require VWAP. The response includes a **screenedStocks**
 list with data-check status, directional signals and the exact rejection reasons
 from the same rule evaluation used to select picks. These are scan-time diagnostics,
 not additional recommendations. They require no extra upstream requests.
-Clicking a non-qualifying stock loads fresh analysis just like clicking a pick.
 Closed markets can show last-session carry-forward setups within the existing
 three-calendar-day freshness limit, with overnight gap risk.
 
 Partial failures are listed by symbol; complete scan failure, denied access,
 rate limits and expired sessions return explicit errors. The date and update
-time are IST, and each pick shows its actual last-trade timestamp. Aging setups
-are labeled stale. Clicking any pick selects CASH/NSE, the matching MIS/CNC mode
-and candle interval, then fetches fresh analysis and shows the chart, indicators
-and code-calculated verdict. Gemini still requires its separate button click;
-no orders are placed by screening or selecting picks.
+time are IST, and each pick includes its actual last-trade timestamp.
+Gemini still requires its separate button click; no orders are placed by screening.
 
 After connecting, type at least two company-name or symbol characters (for example
 `Reliance`, `TCS` or `Mahindra`) into **Stock name or symbol**. A dropdown searches
@@ -715,8 +742,81 @@ and `scripts/groww/feed.py` available at the application root. Short-lived serve
 functions and static hosting are unsuitable. Include the worker and virtual environment
 explicitly in containers/standalone deployments, and disable proxy buffering for SSE.
 Each active browser subscription uses its own worker and counts against Groww feed limits.
-Turbopack may warn about the dynamic host-executable path; the Python environment
-is intentionally excluded from Next.js tracing and must be installed on the host.
+The host-executable call opts out of Turbopack tracing: the container explicitly
+installs the Python environment and copies the worker, rather than asking Next.js
+to discover them. A non-container deployment must install/copy them itself.
+
+#### Persistent Docker deployment (true streaming)
+
+Vercel's Next.js functions are not the deployment target for this Python-worker
+design. The `childProcess.spawn` tracing warning is a build warning, not proof of
+a specific runtime failure; suppressing it alone does not install Python, ship the
+SDK or remove function lifetime limits. Move the entire app to an always-on Linux
+Docker host to preserve true streaming without a polling fallback.
+
+The [Dockerfile](./Dockerfile) builds Next.js, installs the pinned Groww SDK in a
+Python virtual environment, copies the worker and runs the app as a non-root user.
+Its build context is allowlisted by [.dockerignore](./.dockerignore); environment
+files, credentials, local virtual environments and order journals are not copied.
+No runtime credentials are required during image build.
+
+On the host, install Docker Engine with Compose, then create a fresh runtime
+environment file (do not overwrite an existing one):
+
+```sh
+(umask 077; set -C; printf 'GROWW_SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" > .env.production)
+npm run docker:start
+docker compose ps
+npm run docker:logs
+```
+
+Available Docker scripts:
+
+| Command | Purpose |
+| --- | --- |
+| `npm run docker:build` | Build the production image without starting it |
+| `npm run docker:start` | Build and start production in the background |
+| `npm run docker:stop` | Stop production without deleting order data |
+| `npm run docker:logs` | Follow production logs (Ctrl+C exits logs only) |
+| `npm run docker:dev` | Run local development with hot reload in the foreground |
+| `npm run docker:dev:stop` | Stop the separate development project |
+
+Keep the generated session secret stable across restarts. Add `GOOGLE_API_KEY`
+to this file only if you use the optional Gemini analysis. Paste Groww access
+tokens into the app's Connect Groww dialog; do not bake them into images.
+The container sets `GROWW_FEED_PYTHON=/opt/groww-venv/bin/python`, so local
+macOS/Windows executable paths must not be used in the runtime environment.
+
+[compose.yaml](./compose.yaml) binds port 3000 to host loopback, restarts the
+service after failure, reaps child workers and persists `.groww-orders` in a
+named volume. Run one app instance with this local order journal; replicas need
+shared durable order storage first. Do not remove the volume when redeploying.
+On managed container platforms, mount persistent storage at `/app/.groww-orders`
+writable by UID/GID 1000, and prevent scale-to-zero for the streaming service.
+
+Put an HTTPS reverse proxy in front of the app. HTTPS is required for production
+session cookies. For example, inside an nginx HTTPS server block:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 3600s;
+}
+```
+
+Allow outbound HTTPS/WSS to Groww and ensure any additional load balancer permits
+long-lived SSE responses without buffering. After publishing the HTTPS domain,
+connect Groww, select a stock during market hours and confirm fresh trade ticks.
+Closed markets may correctly show last-known/stale prices. To update the app,
+run `npm run docker:start`; open feeds disconnect during restart and
+users can use **Reconnect feed** afterward. The image health check verifies HTTP
+readiness only, not Groww permissions or whether the market is trading.
 
 ### Holdings and positions
 

@@ -69,7 +69,7 @@ export function startGrowwFeed(token: string, instrument: FeedInstrument, signal
     startup.unref();
     signal.addEventListener("abort", abort, { once: true });
     try {
-      worker = childProcess.spawn(python, ["-u", resolve("scripts/groww/feed.py")], {
+      worker = childProcess.spawn(/* turbopackIgnore: true */ python, ["-u", resolve("scripts/groww/feed.py")], {
         stdio: ["pipe", "pipe", "ignore"],
         env: { PATH: `${virtualEnvBin}${delimiter}${process.env.PATH ?? ""}`, NODE_ENV: process.env.NODE_ENV, PYTHONUNBUFFERED: "1" },
       });
