@@ -72,6 +72,7 @@ export interface TechnicalVerdict {
   resistanceLevels: number[];
   indicatorAssessments: IndicatorAssessment[];
   indicatorSnapshot: z.infer<typeof indicatorSnapshotSchema>;
+  directionalSignals: { indicator: "EMA20/EMA50" | IndicatorName; signal: IndicatorAssessment["signal"] }[];
   summary: string;
   reasons: string[];
   exitOnly: boolean;
@@ -81,9 +82,44 @@ const day = 86_400_000;
 const istDate = (time: number) => new Date(time + 330 * 60_000).toISOString().slice(0, 10);
 const intervalMs = { "15minute": 900_000, "1hour": 3_600_000, "1day": day };
 
+export function calculateRuleTradeLevels(price: number, atr: number, tickSize: number, long: boolean):
+  { entryPrice: number; stopLoss: number; targetPrices: number[]; riskPerUnit: number; riskRewardRatio: number } |
+  { error: "REPRESENTATION" | "ROUNDING" } {
+  const entryTicks = Math.round(price / tickSize);
+  const riskTicks = Math.ceil((1.5 * atr) / tickSize - 1e-9);
+  const direction = long ? 1 : -1;
+  const stopTicks = entryTicks - direction * riskTicks;
+  const targetTicks = [entryTicks + direction * 2 * riskTicks, entryTicks + direction * 3 * riskTicks];
+  if (!Number.isFinite(price) || !Number.isFinite(atr) || atr <= 0 ||
+    !Number.isFinite(tickSize) || tickSize < 1e-8 || !Number.isSafeInteger(entryTicks) ||
+    !Number.isSafeInteger(riskTicks) || !Number.isSafeInteger(stopTicks) || entryTicks <= 0 || riskTicks <= 0 || stopTicks <= 0 ||
+    !targetTicks.every((ticks) => Number.isSafeInteger(ticks) && ticks > 0)) return { error: "REPRESENTATION" };
+  const amount = (ticks: number) => Number((ticks * tickSize).toFixed(8));
+  const entry = amount(entryTicks);
+  const stop = amount(stopTicks);
+  const targets = targetTicks.map(amount);
+  if (![entry, stop, ...targets].every((level) => Number.isFinite(level) && level > 0) ||
+    (long ? stop >= entry || targets[0] <= entry || targets[1] <= targets[0]
+      : stop <= entry || targets[0] >= entry || targets[1] >= targets[0])) return { error: "ROUNDING" };
+  return {
+    entryPrice: entry, stopLoss: stop, targetPrices: targets, riskPerUnit: Math.abs(entry - stop),
+    riskRewardRatio: Math.abs(targets[0] - entry) / Math.abs(entry - stop),
+  };
+}
+
 export function calculateTechnicalVerdict(analysis: MarketAnalysis, mode: AnalysisMode, now = Date.now()): TechnicalVerdict {
   const values = indicatorSnapshot(analysis);
   const assessments = indicatorAssessments(analysis);
+  const price = analysis.quote.price;
+  const emaDirection = values.ema20 === null || values.ema50 === null ? "UNAVAILABLE"
+    : price > values.ema20 && price > values.ema50 && values.ema20 > values.ema50 ? "BULLISH"
+      : price < values.ema20 && price < values.ema50 && values.ema20 < values.ema50 ? "BEARISH" : "NEUTRAL";
+  const directionalSignals: TechnicalVerdict["directionalSignals"] = [
+    { indicator: "EMA20/EMA50", signal: emaDirection },
+    ...assessments.filter((item) => item.indicator === "RSI" || item.indicator === "MACD" ||
+      item.indicator === "SUPERTREND" || (mode === "MIS" && item.indicator === "VWAP"))
+      .map(({ indicator, signal }) => ({ indicator, signal })),
+  ];
   const candles = analysis.candles.slice(-20);
   const recentLow = candles.length ? Math.min(...candles.map((candle) => candle.low)) : null;
   const recentHigh = candles.length ? Math.max(...candles.map((candle) => candle.high)) : null;
@@ -94,10 +130,10 @@ export function calculateTechnicalVerdict(analysis: MarketAnalysis, mode: Analys
     entryPrice: null, stopLoss: null, targetPrices: [], riskRewardRatio: null, riskPerUnit: null,
     supportLevels: recentLow !== null && recentLow > 0 ? [recentLow] : [],
     resistanceLevels: recentHigh !== null && recentHigh > 0 ? [recentHigh] : [],
-    indicatorAssessments: assessments, indicatorSnapshot: values,
+    indicatorAssessments: assessments, indicatorSnapshot: values, directionalSignals,
     summary: "HOLD: indicator agreement and fresh data are required.", reasons: [], exitOnly: false,
   };
-  const { price, lastTradeTime } = analysis.quote;
+  const { lastTradeTime } = analysis.quote;
   const lastCandle = analysis.candles.at(-1)?.time;
   const candleTime = lastCandle === undefined ? null : lastCandle * 1000;
   if (result.segment === "FNO" ? !analysis.instrument || mode === "CNC" ||
@@ -130,13 +166,15 @@ export function calculateTechnicalVerdict(analysis: MarketAnalysis, mode: Analys
     return result;
   }
   result.dataReady = true;
-  const emaDirection = values.ema20 !== null && values.ema50 !== null && price > values.ema20 && price > values.ema50 && values.ema20 > values.ema50
-    ? "BULLISH" : values.ema20 !== null && values.ema50 !== null && price < values.ema20 && price < values.ema50 && values.ema20 < values.ema50
-      ? "BEARISH" : "NEUTRAL";
-  const directions = [emaDirection, ...assessments.filter((item) =>
-    item.indicator === "RSI" || item.indicator === "MACD" || item.indicator === "SUPERTREND" ||
-    (mode === "MIS" && item.indicator === "VWAP")).map((item) => item.signal)];
+  const directions = directionalSignals.map((item) => item.signal);
   if (!directions.every((signal) => signal === "BULLISH") && !directions.every((signal) => signal === "BEARISH")) {
+    const bullish = directions.filter((signal) => signal === "BULLISH").length;
+    const bearish = directions.filter((signal) => signal === "BEARISH").length;
+    result.summary = `HOLD: ${bullish}/${directions.length} bullish and ${bearish}/${directions.length} bearish checks. All ${directions.length} must agree in one direction.`;
+    for (const [side, signal] of [["BUY", "BULLISH"], ["SELL", "BEARISH"]] as const) {
+      const blockers = directionalSignals.filter((item) => item.signal !== signal);
+      result.reasons.push(`${side} is not confirmed: ${blockers.map((item) => `${item.indicator} ${item.signal}`).join(", ")}.`);
+    }
     result.reasons.push("EMA trend, RSI, MACD and SuperTrend must agree; intraday also requires VWAP agreement.");
     return result;
   }
@@ -148,36 +186,17 @@ export function calculateTechnicalVerdict(analysis: MarketAnalysis, mode: Analys
   result.reasons.push("All required directional signals agree; this rule agreement is not a probability of profit.");
   if (result.exitOnly) return result;
   const tickSize = analysis.instrument?.tickSize ?? 0.01;
-  const entryTicks = Math.round(price / tickSize);
-  const riskTicks = Math.ceil((1.5 * values.atr) / tickSize - 1e-9);
-  const direction = long ? 1 : -1;
-  const stopTicks = entryTicks - direction * riskTicks;
-  const targetTicks = [entryTicks + direction * 2 * riskTicks, entryTicks + direction * 3 * riskTicks];
-  if (!Number.isFinite(tickSize) || tickSize < 1e-8 || !Number.isSafeInteger(entryTicks) ||
-    !Number.isSafeInteger(riskTicks) || !Number.isSafeInteger(stopTicks) || entryTicks <= 0 || riskTicks <= 0 || stopTicks <= 0 ||
-    !targetTicks.every((ticks) => Number.isSafeInteger(ticks) && ticks > 0)) {
+  const levels = calculateRuleTradeLevels(price, values.atr, tickSize, long);
+  if ("error" in levels) {
     result.decision = "HOLD";
-    result.summary = "HOLD: positive, tick-aligned risk levels cannot be represented safely.";
-    result.reasons.push("ATR risk distance or tick size does not permit a valid positive-price plan.");
+    result.summary = levels.error === "REPRESENTATION"
+      ? "HOLD: positive, tick-aligned risk levels cannot be represented safely." : "HOLD: rounded risk levels are invalid.";
+    result.reasons.push(levels.error === "REPRESENTATION"
+      ? "ATR risk distance or tick size does not permit a valid positive-price plan."
+      : "Finite, directional entry, stop-loss and targets could not be calculated.");
     return result;
   }
-  const amount = (ticks: number) => Number((ticks * tickSize).toFixed(8));
-  const entry = amount(entryTicks);
-  const stop = amount(stopTicks);
-  const targets = targetTicks.map(amount);
-  if (![entry, stop, ...targets].every((level) => Number.isFinite(level) && level > 0) ||
-    (long ? stop >= entry || targets[0] <= entry || targets[1] <= targets[0]
-      : stop <= entry || targets[0] >= entry || targets[1] >= targets[0])) {
-    result.decision = "HOLD";
-    result.summary = "HOLD: rounded risk levels are invalid.";
-    result.reasons.push("Finite, directional entry, stop-loss and targets could not be calculated.");
-    return result;
-  }
-  result.entryPrice = entry;
-  result.stopLoss = stop;
-  result.targetPrices = targets;
-  result.riskPerUnit = Math.abs(result.entryPrice - result.stopLoss);
-  result.riskRewardRatio = Math.abs(result.targetPrices[0] - result.entryPrice) / result.riskPerUnit;
+  Object.assign(result, levels);
   result.reasons.push("Entry is the reference price rounded to tick size; risk is at least 1.5xATR, with targets at 2R and 3R.");
   if (!analysis.instrument) result.reasons.push("CASH levels use paise precision; the order review verifies the exchange's actual tick size.");
   return result;

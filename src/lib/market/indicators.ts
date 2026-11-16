@@ -31,6 +31,7 @@ export function calculateIndicators(candles: Candle[]): TechnicalAnalysis {
     }
     session.push(candle);
     // VWAP resets at the start of each Indian trading session.
+    if (!session.every((item): item is Candle & { volume: number } => item.volume !== null)) continue;
     const totalVolume = session.reduce((sum, item) => sum + item.volume, 0);
     if (totalVolume > 0) {
       const value = VWAP.calculate({

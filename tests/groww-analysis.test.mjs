@@ -5,10 +5,12 @@ import { GET } from "../src/app/api/groww/analysis/route.ts";
 import { growwCandlesSchema, growwQuoteSchema, marketAnalysisSchema } from "../src/lib/groww/market-schemas.ts";
 import { sessionCookie } from "../src/lib/groww/session.ts";
 import { calculateIndicators } from "../src/lib/market/indicators.ts";
+import { historicalRequests } from "../src/lib/groww/historical-requests.ts";
 
 const originalSecret = process.env.GROWW_SESSION_SECRET;
 const token = "test-market-access-token";
-beforeEach(() => {
+beforeEach((t) => {
+  t.mock.method(historicalRequests, "run", async (_token, _signal, request) => request());
   process.env.GROWW_SESSION_SECRET = randomBytes(32).toString("hex");
 });
 afterEach(() => {
@@ -195,6 +197,42 @@ test("missing OHLC candles, including all-null rows, leave the quote available w
   }
 });
 
+test("BLSPOLY null candle volumes retain unchanged OHLC and price indicators instead of returning 502", async (t) => {
+  const original = history(160);
+  const candles = structuredClone(original);
+  const missing = [81, 117, 145];
+  for (const index of missing) candles.payload.candles[index][5] = null;
+  mockMarket(t, candles);
+  const response = await GET(request("symbol=BLSPOLY&exchange=NSE&interval=15minute"));
+  assert.equal(response.status, 200);
+  const result = marketAnalysisSchema.parse(await response.json());
+  assert.equal(result.candles.length, original.payload.candles.length);
+  assert.equal(result.omittedCandles, 0);
+  for (const index of missing) {
+    const [time, open, high, low, close] = original.payload.candles[index];
+    assert.deepEqual(result.candles[index], { time, open, high, low, close, volume: null });
+  }
+  const expected = calculateIndicators(growwCandlesSchema.parse(original));
+  for (const key of ["rsi", "atr", "ema20", "ema50", "macd", "supertrend"]) {
+    assert.deepEqual(result.technical[key], expected[key] && typeof expected[key] === "object" && "time" in expected[key]
+      ? { value: expected[key].value, direction: expected[key].direction } : expected[key]);
+  }
+});
+
+test("all missing candle volumes preserve price history and indicators while VWAP remains unavailable", async (t) => {
+  const candles = history();
+  for (const row of candles.payload.candles) row[5] = null;
+  mockMarket(t, candles);
+  const response = await GET(request("symbol=BLSPOLY"));
+  assert.equal(response.status, 200);
+  const result = marketAnalysisSchema.parse(await response.json());
+  assert.equal(result.candles.length, 80);
+  assert.ok(result.candles.every((candle) => candle.volume === null));
+  assert.equal(result.technical.vwap, null);
+  assert.deepEqual(result.technical.overlays.vwap, []);
+  for (const key of ["rsi", "atr", "ema20", "ema50", "macd", "supertrend"]) assert.notEqual(result.technical[key], null);
+});
+
 test("quote parsing handles documented object and unquoted-key string OHLC, with missing metrics explicitly null", () => {
   for (const ohlc of [quote.payload.ohlc, "{open: 151,high: 153,low: 150,close: 152}", JSON.stringify(quote.payload.ohlc)]) {
     const parsed = growwQuoteSchema.parse({ ...quote, payload: { ...quote.payload, ohlc, volume: undefined, last_trade_time: null } });
@@ -219,7 +257,7 @@ test("historical timestamps are interpreted as IST when zone-less and sorted bef
   assert.equal(parsed[2].time, Date.parse("2026-11-10T09:45:00+05:30") / 1000);
 });
 
-test("invalid candle dates, duplicate times, invalid ranges, missing or negative volumes are rejected", () => {
+test("invalid candle dates, duplicate times, invalid ranges, absent or negative volumes are rejected", () => {
   for (const candles of [
     [["2026-02-30T09:15:00", 100, 102, 99, 101, 100]],
     [["2026-13-01T09:15:00", 100, 102, 99, 101, 100]],
@@ -228,7 +266,7 @@ test("invalid candle dates, duplicate times, invalid ranges, missing or negative
     [[123, 100, 99, 98, 101, 100]],
     [[123, 100, 102, 99, 101]],
     [[123, 100, 102, 99, 101, -1]],
-    [[123, 100, 102, 99, 101, null]],
+    [[123, 100, 102, 99, 101, "invalid"]],
     [[123, null, "invalid", 99, 101, 100]],
     [[123, null, 102, 99, 101, -1]],
     [[123, null, 102, 99, 101]],

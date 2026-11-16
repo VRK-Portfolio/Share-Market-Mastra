@@ -18,7 +18,7 @@ export function Header({ connected, onConnectionChange }: {
 
   return (
     <header className="border-b border-line bg-panel">
-      <div className="mx-auto flex max-w-[1480px] flex-wrap items-center justify-between gap-5 px-5 py-5 sm:px-8 lg:px-10">
+      <div className="mx-auto flex max-w-[1920px] flex-wrap items-center justify-between gap-3 px-4 py-2 sm:px-6">
         <Link href="/" className="flex items-center gap-3" aria-label="TradeTerminal home">
           <span className="flex size-10 items-center justify-center rounded-xl bg-accent/12 text-accent"><Icon name="bolt" className="size-6" /></span>
           <span className="text-xl font-bold tracking-tight sm:text-2xl">Trade<span className="text-accent">Terminal</span></span>

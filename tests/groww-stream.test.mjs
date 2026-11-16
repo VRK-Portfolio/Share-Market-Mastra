@@ -224,3 +224,19 @@ test("live LTP changes only quote price and derived change; snapshots, stale tic
   assert.equal(applyLiveTick(live, { ...tick, symbol: "TCS" }), live);
   assert.equal(applyLiveTick({ ...analysis, quote: { ...analysis.quote, previousClose: 0 } }, tick).quote.changePercent, null);
 });
+
+test("F&O futures and option ticks update day change against the contract's previous close", () => {
+  for (const symbol of ["NIFTY99NOVFUT", "NIFTY99NOV25000CE", "NIFTY99NOV25000PE"]) {
+    const analysis = { symbol, exchange: "NSE", segment: "FNO", candles: [], technical: {},
+      quote: { price: 100, previousClose: 80, change: 20, changePercent: 25, lastTradeTime: clock - 1000 } };
+    const tick = { symbol, exchange: "NSE", segment: "FNO", type: "tick", price: 120,
+      tradeTime: clock, receivedAt: new Date(clock).toISOString() };
+    const live = applyLiveTick(analysis, tick);
+    assert.equal(live.quote.price, 120);
+    assert.equal(live.quote.change, 40);
+    assert.equal(live.quote.changePercent, 50);
+    assert.equal(live.technical, analysis.technical);
+    assert.equal(applyLiveTick(live, { ...tick, price: 90, tradeTime: clock - 1 }), live);
+    assert.equal(applyLiveTick(live, { ...tick, segment: "CASH" }), live);
+  }
+});
