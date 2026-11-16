@@ -9,6 +9,7 @@ import { growwFnoCandleHistorySchema, growwFnoQuoteSchema } from "../src/lib/gro
 import { recommendationForMode } from "../src/lib/market/recommendation.ts";
 import { calculateIndicators } from "../src/lib/market/indicators.ts";
 import { sessionCookie } from "../src/lib/groww/session.ts";
+import { historicalRequests } from "../src/lib/groww/historical-requests.ts";
 import { stockAnalysisAgent } from "../src/mastra/agents/stock-analysis-agent.ts";
 
 const envKeys = ["GROWW_SESSION_SECRET", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"];
@@ -16,6 +17,7 @@ const original = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]
 const token = "test-fno-secret-token";
 let clock = Date.now();
 beforeEach((t) => {
+  t.mock.method(historicalRequests, "run", async (_token, _signal, request) => request());
   clock += 3_600_001;
   t.mock.method(Date, "now", () => clock);
   process.env.GROWW_SESSION_SECRET = randomBytes(32).toString("hex");
@@ -175,9 +177,11 @@ test("OI and IV remain explicitly unavailable when absent; malformed FNO OI is r
   const candles = history();
   candles.payload.candles[0][1] = null;
   candles.payload.candles[1].splice(6);
+  candles.payload.candles[1][5] = null;
   const parsed = growwFnoCandleHistorySchema.parse(candles);
   assert.equal(parsed.omittedCandles, 1);
   assert.equal(parsed.candles[0].openInterest, null);
+  assert.equal(parsed.candles[0].volume, null);
   candles.payload.candles[2][6] = -1;
   assert.equal(growwFnoCandleHistorySchema.safeParse(candles).success, false);
 });

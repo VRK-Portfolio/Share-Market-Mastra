@@ -12,6 +12,7 @@ export class GrowwHttpError extends Error {
     message?: string;
     resource?: string;
     type?: "http" | "invalid-json" | "upstream-failure";
+    retryAfterSeconds?: number;
   };
 
   constructor(status: number, message: string, details: GrowwHttpError["details"] = {}) {
@@ -68,8 +69,18 @@ export async function growwJson(url: URL, token: string, resource: string, signa
   });
   if (!response.ok) {
     const details = await growwFailureDetails(response, token);
+    const retryAfter = response.headers.get("retry-after");
+    const retryAfterSeconds = response.status === 429
+      ? retryAfter && /^\d+$/.test(retryAfter)
+        ? Math.max(1, Math.min(86400, Number(retryAfter)))
+        : retryAfter && Number.isFinite(Date.parse(retryAfter))
+          ? Math.max(1, Math.min(86400, Math.ceil((Date.parse(retryAfter) - Date.now()) / 1000)))
+          : 60
+      : undefined;
     const reason = [details.code, details.message].filter(Boolean).join(": ");
-    const hint = response.status === 403
+    const hint = response.status === 429
+      ? `Groww's request rate limit was reached. Wait ${retryAfterSeconds} seconds before retrying; avoid repeated refreshes.`
+      : response.status === 403
       ? "Groww denied access. Check your active Trading API subscription and the permissions of this access token."
         + (resource === "quote" || resource === "historical candles"
           ? " A successful account connection does not confirm market-data access." : "")
@@ -77,7 +88,7 @@ export async function growwJson(url: URL, token: string, resource: string, signa
     throw new GrowwHttpError(
       response.status,
       `Groww could not load ${resource} (HTTP ${response.status}). ${reason ? `${reason}. ` : ""}${hint}`,
-      { ...details, resource, type: "http" },
+      { ...details, resource, type: "http", ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }) },
     );
   }
   let body: unknown;
@@ -113,9 +124,11 @@ export function growwErrorResponse(error: unknown, message: string) {
       ...(error instanceof GrowwHttpError && error.details.resource ? { stage: error.details.resource } : {}),
       ...(error instanceof GrowwHttpError && error.details.code ? { upstreamCode: error.details.code } : {}),
       ...(error instanceof GrowwHttpError && error.details.message ? { upstreamMessage: error.details.message } : {}),
+      ...(error instanceof GrowwHttpError && error.details.retryAfterSeconds !== undefined ? { retryAfterSeconds: error.details.retryAfterSeconds } : {}),
     },
     { status, headers: unauthorized
       ? { ...sessionResponseHeaders, "Set-Cookie": clearSessionCookie() }
-      : sessionResponseHeaders },
+      : { ...sessionResponseHeaders, ...(error instanceof GrowwHttpError && error.details.retryAfterSeconds !== undefined
+        ? { "Retry-After": String(error.details.retryAfterSeconds) } : {}) } },
   );
 }

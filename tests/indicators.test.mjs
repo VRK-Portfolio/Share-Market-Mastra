@@ -52,6 +52,24 @@ test("VWAP matches plugin and resets at the next IST session", () => {
   assert.equal(calculateIndicators([{ ...next, volume: 0 }]).vwap, null);
 });
 
+test("missing session volume invalidates only VWAP, preserves price indicators and recovers next session", () => {
+  const candles = series();
+  const baseline = calculateIndicators(candles);
+  const missing = candles.map((candle, index) => index === candles.length - 2 ? { ...candle, volume: null } : candle);
+  const result = calculateIndicators(missing);
+  assert.equal(result.vwap, null);
+  assert.ok(result.overlays.vwap.every((point) => point.time < missing.at(-2).time));
+  for (const key of ["rsi", "atr", "ema20", "ema50", "macd", "supertrend"]) {
+    assert.deepEqual(result[key], baseline[key]);
+  }
+  assert.deepEqual(result.overlays.ema20, baseline.overlays.ema20);
+  assert.deepEqual(result.overlays.supertrend, baseline.overlays.supertrend);
+  const next = { ...candles.at(-1), time: candles.at(-1).time + 86400, volume: 100 };
+  assert.equal(calculateIndicators([...missing, next]).vwap, (next.high + next.low + next.close) / 3);
+  const oldMissing = candles.map((candle, index) => index === 0 ? { ...candle, volume: null } : candle);
+  assert.equal(calculateIndicators(oldMissing).vwap, baseline.vwap);
+});
+
 test("SuperTrend aligns with ATR warmup and flips on a decisive reversal", () => {
   const up = Array.from({ length: 60 }, (_, index) => ({
     time: index * 900, open: 100 + index * 3, high: 102 + index * 3,

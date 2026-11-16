@@ -81,7 +81,7 @@ const candleSchema = z.object({
   high: price,
   low: price,
   close: price,
-  volume: price,
+  volume: price.nullable(),
   openInterest: price.nullish(),
 }).refine((candle) =>
   candle.high >= Math.max(candle.open, candle.close) &&

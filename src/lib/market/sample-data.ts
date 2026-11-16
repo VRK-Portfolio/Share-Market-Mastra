@@ -9,7 +9,7 @@ while (sessionDates.length < 100) {
   date.setUTCDate(date.getUTCDate() - 1);
 }
 
-function createCandles(interval: Interval): Candle[] {
+function createCandles(interval: Interval): (Candle & { volume: number })[] {
   const barsPerDay = interval === "15minute" ? 25 : interval === "1hour" ? 7 : 1;
   const count = interval === "1hour" ? 98 : 100;
   const step = interval === "15minute" ? 900 : interval === "1hour" ? 3600 : 86400;
@@ -31,7 +31,7 @@ function createCandles(interval: Interval): Candle[] {
   });
 }
 
-export const sampleCandles: Record<Interval, Candle[]> = {
+export const sampleCandles: Record<Interval, (Candle & { volume: number })[]> = {
   "15minute": createCandles("15minute"),
   "1hour": createCandles("1hour"),
   "1day": createCandles("1day"),

@@ -27,6 +27,7 @@ schema export such as `cashInstrumentSearchSchema.safeParse`, restart
 - Actual Groww quotes and 15m/1h/1D historical candles, with volume, hover OHLC
   and overlay toggles.
 - MIS/CNC display presets for technical indicator cards.
+- Today's rule-qualified intraday and carry-forward picks, with click-to-analyze.
 - Button-triggered Mastra / Google Gemini technical recommendations, target and
   stop-loss scenarios, per-indicator evidence, support/resistance and advisory delivery GTT triggers.
 - Reviewed PAPER or LIVE Groww DAY orders for CASH and F&O, with explicit confirmation.
@@ -37,7 +38,9 @@ schema export such as `cashInstrumentSearchSchema.safeParse`, restart
 
 **No sample-price fallback or automatic order placement.** Real orders require
 an explicit order review and confirmation. Groww streams LTP; other market data is
-fetched on search, interval/exchange changes and manual refresh. Prices may reflect
+fetched on search, interval/exchange changes and manual refresh. Selected F&O
+contracts also refresh snapshots automatically about every 30 seconds by default.
+Prices may reflect
 the last trading session when markets are closed. This is not investment advice.
 
 ## Components and data
@@ -105,6 +108,123 @@ Connecting does not fetch or place orders.
 
 ### Actual stock search and analysis
 
+**Historical win rate** below the indicators replays the selected stock/contract's
+loaded Groww history and reports separate BUY/SELL percentages, net winning/closed
+trade counts and approximate 95% Wilson intervals. It is not a probability that
+today's call will succeed, an out-of-sample validation, or a change to live trading
+rules. Zero wins is 0%; no completed trades produces no percentage. Samples below
+30 trades are explicitly labeled limited; correlated outcomes can make statistical
+intervals optimistic.
+
+The backtest recomputes the existing strict indicators from closed-candle prefixes,
+with 50 warm-up candles, enters at the next open, and uses the shared tick-rounded
+1.5xATR stop and 2R target. One position is tested at a time. Opening stop gaps fill
+at the open; target gaps are capped at the target. Otherwise a bar touching both
+stop and target counts as stop-first. MIS exits at the 15:30 IST session close;
+CNC/NRML exits after five observed trading sessions, or contract expiry if earlier.
+A win means a positive return
+after the explicitly estimated **0.2% total round-trip costs**, split across entry
+and exit, including timed exits. This estimate covers fees, taxes and slippage;
+it does not reproduce broker charges, margin, liquidity or actual execution.
+Delivery and options SELL remain exit-only, not short-entry backtests.
+
+Unfinished trades are excluded, not forced closed at the history boundary.
+Incomplete/current candles, missing OHLC/session bars and insufficient warm-up
+history cannot manufacture outcomes. Missing volume prevents intraday VWAP
+confirmation but preserves price-only carry-forward calculations. Intraday tests
+require intraday candles. Only the already-loaded history is used (currently
+14/45/179 calendar days for 15m/1h/1D); no extra Groww calls, orders or model calls
+are triggered. Refresh market data to update the historical snapshot.
+
+Intraday backtests exclude and report candles whose starts fall outside
+09:15 inclusive to 15:30 exclusive IST, including special evening sessions,
+rather than rejecting otherwise usable regular-session history. Filtering happens
+before warm-up and signal calculations; timestamps are never shifted and missing
+bars are never filled. The chart and live indicator history remain unchanged.
+Daily candles are not filtered by their intraday start clock. Missing bars or
+session boundaries within the retained intraday history still prevent testing,
+because stop/target outcomes could have occurred during the unobserved period.
+
+**Save scenario alerts** stores each available displayed 15-/30-minute range in
+this browser's localStorage, including stock/exchange/segment, exact F&O contract,
+bias, reference price, ATR, bounds, snapshot time, save time and fixed deadline.
+New live prices or refreshed estimates do not move saved targets or deadlines.
+Saving the exact same displayed horizon again does not create a duplicate.
+
+Bullish price alerts trigger at or above the upper bound; bearish at or below the
+lower bound; neutral alerts accept either boundary. Only fresh live ticks for the
+currently selected instrument, timestamped at/after saving, are eligible. Price
+monitoring does not follow stocks after switching away and does not add REST
+polling, subscriptions, orders or model calls. Deadline checks cover all saved
+stocks even when Groww is disconnected. Each horizon completes on its first
+qualifying observation or deadline; time wins ties. Delayed ticks received after
+the deadline do not retroactively replace a time notification.
+
+In-app notifications remain until dismissed, with completed history under
+**Saved scenario alerts**; pending alerts can be cancelled and history deleted.
+Reloading restores alerts and processes overdue deadlines without retriggering
+completed alerts. Browser closure/suspension and throttled background timers can
+delay notification display until the dashboard resumes; this is not a background
+broker alert service. Web Locks coordinate writes across tabs where supported;
+otherwise use one dashboard tab. Invalid/blocked/full storage reports an explicit
+error rather than claiming a save, and invalid stored records are not overwritten
+without an explicitly confirmed reset. Clearing browser storage deletes alerts.
+Saved ranges are heuristic scenarios, not calibrated forecasts or guaranteed prices.
+
+The desktop workspace uses a picks sidebar and places the chart/indicator cards
+beside the technical verdict at wide-screen sizes (optimized for 1920 x 1080).
+Stock selection and quote stay above the analysis. Portfolio tables, screened-stock
+diagnostics, full indicator evidence, optional Gemini analysis and order/calculator
+tools are expandable rather than stacked open. Expanding a section does not remount
+its contents or trigger model calls/orders. Market-data errors remain visible.
+Smaller screens stack the columns; long expanded picks lists scroll within the
+desktop sidebar. Detailed views may still need scrolling when expanded.
+
+**Top stock picks for today** loads automatically after connecting Groww.
+`GET /api/groww/top-picks` screens a fixed NSE CASH universe: RELIANCE, HDFCBANK,
+ICICIBANK, INFY, TCS, SBIN, LT and ITC. It uses the same validated quote/history
+loader as individual stock analysis, with two workers, per-analysis 15-second
+timeouts and an overall 45-second deadline. **Refresh picks** rescans; there is
+no automatic polling or sample fallback.
+
+All historical-candle requests from screening and individual analysis share a
+per-token server-process queue: only one is in flight, and starts are spaced at
+least one second apart. This is a conservative app pacing policy, not a claimed
+Groww historical-API limit. Queued work honors cancellation and existing timeouts.
+An HTTP 429 retains the session and reports a rate-limit message and `Retry-After`
+in seconds. The queue honors Groww's seconds/date header, or uses 60 seconds if
+it is missing/invalid, before permitting another candle request. Refreshes during
+the cooldown return HTTP 429 with the remaining seconds without hitting Groww;
+they do not sit in the queue until the analysis timeout. Failed requests are
+not automatically retried. Wait for the displayed cooldown before refreshing.
+Separate server instances or other apps using the same account still consume
+Groww's upstream limits; this in-memory queue does not coordinate those clients.
+
+Each mode shows at most three qualifying setups ranked by approximate
+reported-session traded value (LTP times reported volume), not predicted profit
+or a whole-market ranking. Intraday uses 15-minute candles and the existing MIS
+freshness/indicator-agreement rules, including VWAP; bullish BUY and conditional
+bearish short SELL setups can qualify. Carry forward uses daily candles and CNC
+rules, and lists only long BUY setups, never overnight cash shorts. Missing
+quote volume, stale data, insufficient history or conflicting indicators exclude a
+stock. No qualifying setups means an explicit empty state, not forced picks.
+Incomplete current-session candle volume also prevents MIS VWAP confirmation;
+CNC does not require VWAP. Each mode shows a separate clickable **Screened stocks**
+list with data-check status, directional signals and the exact rejection reasons
+from the same rule evaluation used to select picks. These are scan-time diagnostics,
+not additional recommendations. They require no extra upstream requests.
+Clicking a non-qualifying stock loads fresh analysis just like clicking a pick.
+Closed markets can show last-session carry-forward setups within the existing
+three-calendar-day freshness limit, with overnight gap risk.
+
+Partial failures are listed by symbol; complete scan failure, denied access,
+rate limits and expired sessions return explicit errors. The date and update
+time are IST, and each pick shows its actual last-trade timestamp. Aging setups
+are labeled stale. Clicking any pick selects CASH/NSE, the matching MIS/CNC mode
+and candle interval, then fetches fresh analysis and shows the chart, indicators
+and code-calculated verdict. Gemini still requires its separate button click;
+no orders are placed by screening or selecting picks.
+
 After connecting, type at least two company-name or symbol characters (for example
 `Reliance`, `TCS` or `Mahindra`) into **Stock name or symbol**. A dropdown searches
 Groww's actual instrument catalog after 400 ms, showing the company name, exact
@@ -143,7 +263,17 @@ Groww candles with explicit null OHLC prices are omitted, not replaced with zero
 or previous prices. The response's `omittedCandles` count is shown in the dashboard;
 chart and indicators use only complete candles. If every candle is incomplete,
 the quote remains available while the chart and indicators stay unavailable.
-Malformed numbers, timestamps, price ranges and invalid volumes still fail validation.
+Explicit **null candle volume** is retained as unavailable, not converted to zero
+and not a reason to discard valid OHLC prices. The chart and price-only RSI, ATR,
+EMA, MACD and SuperTrend calculations retain these candles. The dashboard reports
+the missing-volume count; the chart omits their volume bars and labels hover
+volume unavailable. Session VWAP is unavailable from the first missing-volume
+candle through that IST session's end, because partial-volume weighting would be
+misleading; it resets and can recover in the next session with complete volume.
+Earlier valid VWAP prefixes remain visible, and missing volume in an older session
+does not invalidate today's complete-volume VWAP. `omittedCandles` continues to
+count only rows with incomplete OHLC. Absent volume columns, malformed numbers,
+timestamps, price ranges and negative volumes still fail validation.
 
 Quote and history requests run together with a shared 15-second deadline. Errors
 are surfaced explicitly; an invalid symbol, denied subscription or API failure
@@ -184,8 +314,14 @@ session cookie or token, when reporting a failure.
 
 ### Futures and options
 
-Choose **Futures / options** in **Market segment**. Search an underlying or
-contract, filter FUT/CE/PE, expiry and strike, then select an exact contract.
+Choose **Futures / options** in **Market segment**. The **Selected contract**
+field is editable: type at least two underlying or contract characters to show
+a matching-contract dropdown. Filter FUT/CE/PE, expiry and strike in the dropdown,
+then click an exact contract or use arrow keys and Enter; Escape dismisses the
+list. Results show the exchange, type, expiry, strike and lot size, with pagination.
+Editing the query or filters clears the previous selection and analysis; partial
+text never triggers quote/history requests. Selecting a result fills the field
+and loads the verified contract's analysis. Exchange changes reset the search.
 Search uses Groww's public
 [instrument CSV](https://groww.in/trade-api/docs/curl/instruments), cached on the
 server for one hour. Results are paginated (30 per page), filtered by exchange,
@@ -223,6 +359,21 @@ The separate order-review action is described below; it does not execute GTT.
 
 ### Technical verdict (no LLM)
 
+The dashboard retains the **strict confirmation** policy rather than forcing a
+BUY/SELL for every stock. **Decision checks / Why HOLD?** shows whether data
+quality and freshness passed, the required bullish/bearish agreement counts and
+each directional check. EMA20/EMA50 is one combined trend check, including their
+ordering; ATR is excluded from directional counts. MIS uses five checks (also
+VWAP); CNC/NRML use four. Counts are not confidence or profit probabilities.
+
+Mixed-signal HOLD reports the exact BUY and SELL blockers near the decision,
+instead of the generic “indicator agreement and fresh data are required” message.
+Data failures show their specific reasons. HOLD displays an explanation instead
+of four empty trade-level cards; it still has no actionable entry, targets, stop
+or reward/risk. Valid BUY/SELL setups and exit-only restrictions are unchanged.
+This policy was retained to avoid unvalidated strategy changes and preserve
+data-quality/risk safeguards, not because it is proven to maximize returns.
+
 Before the optional Gemini report, the dashboard calculates a deterministic
 BUY/SELL/HOLD verdict from the existing TypeScript indicators. This requires
 no Google key, model call or model tokens. It also supports the existing explicitly
@@ -257,6 +408,19 @@ or target forecasts.
 
 Streaming can change the reference-price comparisons and scenario levels;
 indicators remain explicitly labeled REST snapshots and need a market refresh.
+Selected F&O contracts have an **Auto-refresh F&O data (30s)** checkbox, enabled
+by default. It reloads the selected quote/history and dedicated 15-minute forecast
+snapshot after the previous refresh completes, never overlapping refresh cycles.
+Day change, OI/IV and indicator cards receive the new validated snapshot while
+the last good snapshot stays visible during loading or a failed refresh. Errors
+and the last successful update time remain visible. HTTP 429 pauses the next cycle
+for at least the reported cooldown (60 seconds if missing); hidden tabs pause
+subsequent polling, not the initial selection or manual-refresh request. Switching
+selections or disconnecting cancels pending work.
+Disable the checkbox for manual-only snapshots. No Gemini or order calls are
+triggered by automatic refresh. Indicators can remain unchanged if Groww returns
+the same candles, especially for daily intervals, closed markets or illiquid
+contracts; the app does not invent candle volume or recalculate from LTP alone.
 Freshness is reevaluated every five seconds even if no ticks arrive. Opening order
 review captures its analysis side/price so later ticks cannot silently change the
 reviewed instruction. No order, GTT, stop or target is placed automatically.
@@ -295,7 +459,8 @@ of the selected trade product. They are limited to regular weekday NSE/BSE hours
 This is not a holiday/special-session calendar model. F&O estimates are selected
 contract prices/premiums, not forecasts of the underlying or option-writing advice.
 The reference quote can stream, but 15-minute ATR/indicators remain labeled
-snapshots. No polling, Gemini calls, orders or protective exits are triggered.
+snapshots. Scenarios do not add their own polling; they reuse the F&O auto-refresh
+cycle when enabled. No Gemini calls, orders or protective exits are triggered.
 
 ### Gemini stock analysis
 
@@ -523,12 +688,15 @@ Only prices, trade timestamps and sanitized connection/error messages are forwar
 This requires an active Groww Trading API subscription with feed permissions.
 LTP and day change derived from the snapshot previous close update on ticks.
 Day OHLC, volume, OI/IV, historical candles and indicators remain **snapshots**:
-use **Refresh market data** to update them. Missing previous close makes derived
+use **Refresh market data** or the enabled F&O auto-refresh cycle to update them.
+Missing previous close makes derived
 change unavailable. No candles or volume are invented from price ticks.
 Freshness uses trade timestamps, not heartbeat traffic. After 60 seconds without
 a fresh trade the dashboard labels the price stale/last-known, including when
 markets are closed. Feed errors remain visible; **Reconnect feed** explicitly
-retries. There is no silent polling fallback or automatic reconnection loop.
+retries. F&O snapshot polling is explicit and separately labeled; it does not
+masquerade as streaming. There is no silent polling fallback or automatic
+stream-reconnection loop.
 
 Initial 401 responses clear the session; 403 preserves it. Missing worker setup
 returns 503, connection startup is bounded to 25 seconds, and worker errors

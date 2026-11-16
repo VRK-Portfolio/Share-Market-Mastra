@@ -73,6 +73,18 @@
   .badge {
     @apply rounded-md border border-accent/25 bg-accent/8 px-2 py-1 font-mono text-[9px] font-medium tracking-wider text-accent;
   }
+  .workspace-details {
+    @apply rounded-xl border border-line bg-panel p-3;
+  }
+  .workspace-details > summary {
+    @apply cursor-pointer text-xs font-medium;
+  }
+}
+
+@media (min-width: 1024px) {
+  .market-workspace .field {
+    height: 38px;
+  }
 }
 
 body {

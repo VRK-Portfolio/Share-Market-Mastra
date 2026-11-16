@@ -86,6 +86,53 @@ test("every required directional indicator and EMA ordering must agree; ATR is n
   assert.equal(calculateTechnicalVerdict(data, "CNC", now).decision, "BUY");
 });
 
+test("mixed-signal HOLD explains agreement counts and the exact BUY/SELL blockers", () => {
+  const data = analysis();
+  data.technical.rsi = 50;
+  const verdict = calculateTechnicalVerdict(data, "MIS", now);
+  hold(verdict);
+  assert.equal(verdict.dataReady, true);
+  assert.match(verdict.summary, /4\/5 bullish and 0\/5 bearish/);
+  assert.ok(verdict.reasons.includes("BUY is not confirmed: RSI NEUTRAL."));
+  assert.match(verdict.reasons.find((reason) => reason.startsWith("SELL is not confirmed:")), /MACD BULLISH/);
+  assert.equal(verdict.directionalSignals.some((item) => item.indicator === "ATR"), false);
+});
+
+test("EMA ordering is exposed as a combined blocker even when price is above both averages", () => {
+  const data = analysis();
+  data.technical.ema20 = 94;
+  const verdict = calculateTechnicalVerdict(data, "MIS", now);
+  hold(verdict);
+  assert.equal(verdict.dataReady, true);
+  assert.deepEqual(verdict.directionalSignals.find((item) => item.indicator === "EMA20/EMA50"),
+    { indicator: "EMA20/EMA50", signal: "NEUTRAL" });
+  assert.ok(verdict.reasons.includes("BUY is not confirmed: EMA20/EMA50 NEUTRAL."));
+  assert.ok(verdict.indicatorAssessments.filter((item) => ["EMA20", "EMA50"].includes(item.indicator))
+    .every((item) => item.signal === "BULLISH"));
+});
+
+test("directional diagnostics respect mode requirements without overriding missing or stale data", () => {
+  const data = analysis();
+  data.technical.vwap = null;
+  const delivery = calculateTechnicalVerdict(data, "CNC", now);
+  assert.equal(delivery.decision, "BUY");
+  assert.equal(delivery.directionalSignals.length, 4);
+  assert.equal(delivery.directionalSignals.some((item) => item.indicator === "VWAP"), false);
+  const intraday = calculateTechnicalVerdict(data, "MIS", now);
+  hold(intraday);
+  assert.equal(intraday.dataReady, false);
+  assert.ok(intraday.directionalSignals.some((item) => item.indicator === "VWAP" && item.signal === "UNAVAILABLE"));
+  data.technical.ema50 = null;
+  const missing = calculateTechnicalVerdict(data, "CNC", now);
+  hold(missing);
+  assert.equal(missing.dataReady, false);
+  assert.ok(missing.directionalSignals.some((item) => item.indicator === "EMA20/EMA50" && item.signal === "UNAVAILABLE"));
+  const stale = calculateTechnicalVerdict(analysis(), "MIS", now + 60_001);
+  hold(stale);
+  assert.equal(stale.dataReady, false);
+  assert.ok(stale.directionalSignals.every((item) => item.signal === "BULLISH"));
+});
+
 test("RSI thresholds are inclusive and RSI extremes alone never produce a reversal trade", () => {
   for (const [bearish, boundaries, outside] of [[false, [55, 70], [54.99, 70.01]], [true, [30, 45], [29.99, 45.01]]]) {
     for (const rsi of boundaries) {
