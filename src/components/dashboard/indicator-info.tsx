@@ -3,11 +3,10 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { indicatorDetails } from "../../lib/market/indicator-details";
-import type { IndicatorValues } from "../../lib/market/indicator-details";
 import type { IndicatorName } from "../../lib/market/technical-verdict";
 
-export function InfoTooltip({ label, value, description }: {
-  label: string; value: string; description: string;
+export function InfoTooltip({ label, reference, description }: {
+  label: string; reference: string; description: string;
 }) {
   const id = useId();
   const button = useRef<HTMLButtonElement>(null);
@@ -60,7 +59,7 @@ export function InfoTooltip({ label, value, description }: {
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
     };
-  }, [open, label, value, description]);
+  }, [open, label, reference, description]);
 
   return <>
     <button ref={button} type="button" aria-label={`Info about ${label}`} aria-describedby={open ? id : undefined}
@@ -74,13 +73,14 @@ export function InfoTooltip({ label, value, description }: {
       className="invisible fixed left-0 top-0 z-50 w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-line bg-panel p-4 text-xs text-foreground shadow-xl"
       onPointerEnter={show} onPointerLeave={hide}>
       <p className="font-semibold">{label}</p>
-      <p className="mt-2 text-muted">Unrounded supplied value</p>
-      <p className="mt-1 break-words font-mono">{value}</p>
+      <p className="mt-2 text-muted">Ideal range / decision reference</p>
+      <p className="mt-1 whitespace-pre-line">{reference}</p>
       <p className="mt-3">{description}</p>
+      <p className="mt-3 text-muted">Reference conditions, not a standalone trade signal or guaranteed outcome.</p>
     </div>, document.body)}
   </>;
 }
 
-export function IndicatorInfo({ name, values }: { name: IndicatorName; values: IndicatorValues | null }) {
-  return <InfoTooltip {...indicatorDetails(name, values)} />;
+export function IndicatorInfo({ name }: { name: IndicatorName }) {
+  return <InfoTooltip {...indicatorDetails(name)} />;
 }

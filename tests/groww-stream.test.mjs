@@ -9,6 +9,7 @@ import { getFeedInstrument } from "../src/lib/groww/instruments.ts";
 import { startGrowwFeed } from "../src/lib/groww/stream.ts";
 import { applyLiveTick, LiveEventDecoder } from "../src/lib/groww/live-schemas.ts";
 import { sessionCookie } from "../src/lib/groww/session.ts";
+import { verifyExecutionQuote } from "../src/lib/paper/execution-quote.ts";
 
 const originalSecret = process.env.GROWW_SESSION_SECRET;
 let clock = Date.now();
@@ -25,6 +26,7 @@ const instrument = { symbol: "RELIANCE", exchange: "NSE", segment: "CASH", excha
 const header = "exchange,trading_symbol,groww_symbol,underlying_symbol,instrument_type,expiry_date,strike_price,lot_size,tick_size,segment,exchange_token";
 const catalog = [
   header, "NSE,RELIANCE,NSE-RELIANCE,,EQ,,,1,0.05,CASH,2885",
+  "BSE,RELIANCE,BSE-RELIANCE,,EQ,,,1,0.05,CASH,500325",
   "NSE,NIFTY,NSE-NIFTY,,IDX,,,1,0.05,CASH,123",
   "NSE,NIFTY99NOVFUT,NSE-NIFTY-23Nov99-FUT,NIFTY,FUT,2099-11-23,-0.01,65,0.1,FNO,456",
   "NSE,NIFTY00NOVFUT,NSE-NIFTY-23Nov00-FUT,NIFTY,FUT,2000-11-23,-0.01,65,0.1,FNO,789",
@@ -91,6 +93,10 @@ test("SSE waits for authentication, frames partial worker output and keeps token
   const tick = decoder.push(new TextDecoder().decode((await reader.read()).value))[0];
   assert.equal(tick.price, 123.45);
   assert.equal(tick.symbol, instrument.symbol);
+  assert.deepEqual(verifyExecutionQuote("fake-private-test-token", tick.paperQuoteProof), {
+    symbol: instrument.symbol, exchange: instrument.exchange, segment: "CASH",
+    price: 123.45, tradeTime: clock, issuedAt: clock,
+  });
   assert.ok(!JSON.stringify(tick).includes("fake-private-test-token"));
   await reader.cancel();
   assert.equal(worker.kill.mock.calls[0].arguments[0], "SIGTERM");
@@ -106,6 +112,86 @@ test("startup auth errors preserve safe HTTP statuses and 401 clears the cookie 
     assert.equal(response.status, code);
     assert.equal(!!response.headers.get("set-cookie"), code === 401);
     assert.ok(!(await response.text()).includes("fake-stream-test-token"));
+  }
+});
+
+test("batch streams deduplicate stocks and route signed ticks by subscription over one worker", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(catalog));
+  const { worker, spawn } = mockWorker(t);
+  const query = new URLSearchParams({ instruments: JSON.stringify([
+    { symbol: "RELIANCE", exchange: "NSE" }, { symbol: "RELIANCE", exchange: "BSE" },
+    { symbol: "RELIANCE", exchange: "NSE" },
+  ]) });
+  const pending = GET(request(query.toString()));
+  setTimeout(() => worker.stdout.write('{"type":"connected"}\n'), 10);
+  const response = await pending;
+  assert.equal(response.status, 200);
+  const config = JSON.parse(worker.stdin.read().toString());
+  assert.equal(config.instruments.length, 2);
+  assert.equal(spawn.mock.callCount(), 1);
+  const reader = response.body.getReader();
+  const decoder = new LiveEventDecoder();
+  await reader.read();
+  for (const [subscription, exchange, price] of [[0, "NSE", 100], [1, "BSE", 105]]) {
+    worker.stdout.write(JSON.stringify({ type: "tick", price, tradeTime: clock, subscription }) + "\n");
+    const tick = decoder.push(new TextDecoder().decode((await reader.read()).value))[0];
+    assert.equal(tick.exchange, exchange);
+    assert.equal(tick.price, price);
+    assert.equal(verifyExecutionQuote("fake-stream-test-token", tick.paperQuoteProof).exchange, exchange);
+  }
+  await reader.cancel();
+});
+
+test("mixed CASH and FNO batch streams preserve segment identities and sign only cash equity execution quotes", async t => {
+  t.mock.method(globalThis, "fetch", async () => new Response(catalog));
+  const { worker, spawn } = mockWorker(t);
+  const query = new URLSearchParams({ instruments: JSON.stringify([
+    { symbol: "RELIANCE", exchange: "NSE" },
+    { symbol: "NIFTY99NOVFUT", exchange: "NSE", segment: "FNO" },
+  ]) });
+  const pending = GET(request(query.toString()));
+  setTimeout(() => worker.stdout.write('{"type":"connected"}\n'), 10);
+  const response = await pending;
+  assert.equal(response.status, 200);
+  const config = JSON.parse(worker.stdin.read().toString());
+  assert.deepEqual(config.instruments.map(item => item.segment), ["CASH", "FNO"]);
+  assert.equal(spawn.mock.callCount(), 1);
+  const reader = response.body.getReader();
+  await reader.read();
+  worker.stdout.write(JSON.stringify({ type: "tick", price: 24000, tradeTime: clock, subscription: 1 }) + "\n");
+  const tick = new LiveEventDecoder().push(new TextDecoder().decode((await reader.read()).value))[0];
+  assert.equal(tick.symbol, "NIFTY99NOVFUT");
+  assert.equal(tick.segment, "FNO");
+  assert.equal(tick.paperQuoteProof, undefined);
+  await reader.cancel();
+});
+
+test("invalid batch selections and non-equities never open a broker feed", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(catalog));
+  const spawn = t.mock.method(childProcess, "spawn", () => { throw new Error("Unexpected worker"); });
+  for (const input of ["not-json", "[]", JSON.stringify(Array(51).fill({ symbol: "RELIANCE", exchange: "NSE" })),
+    JSON.stringify([{ symbol: "BAD!", exchange: "NSE" }])]) {
+    assert.equal((await GET(request(new URLSearchParams({ instruments: input }).toString()))).status, 400);
+  }
+  assert.equal((await GET(request(new URLSearchParams({
+    instruments: JSON.stringify([{ symbol: "NIFTY", exchange: "NSE" }]),
+  }).toString()))).status, 404);
+  assert.equal(spawn.mock.callCount(), 0);
+});
+
+test("a missing or out-of-range subscription cannot misattribute a multi-stock tick", async (t) => {
+  t.mock.method(console, "error", () => {});
+  for (const subscription of [undefined, 2]) {
+    const { worker } = mockWorker(t);
+    const pending = startGrowwFeed("fake-token", [instrument, { ...instrument, exchange: "BSE", exchangeToken: "500325" }], new AbortController().signal);
+    worker.stdout.write('{"type":"connected"}\n');
+    const reader = (await pending).getReader();
+    await reader.read();
+    worker.stdout.write(JSON.stringify({ type: "tick", price: 100, tradeTime: clock, subscription }) + "\n");
+    const error = new LiveEventDecoder().push(new TextDecoder().decode((await reader.read()).value))[0];
+    assert.equal(error.type, "error");
+    assert.equal(error.failureType, "invalid-tick");
+    assert.equal((await reader.read()).done, true);
   }
 });
 

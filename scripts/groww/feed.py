@@ -81,14 +81,21 @@ async def run(config: dict[str, Any]) -> None:
     from nats.aio.client import Client
 
     access_token = config["accessToken"]
-    exchange = config["exchange"]
-    segment = config["segment"]
-    exchange_token = config["exchangeToken"]
-    index = config["instrumentType"] == "IDX"
-    if exchange not in ("NSE", "BSE") or segment not in ("CASH", "FNO"):
-        raise ValueError("Invalid instrument")
-    if not isinstance(access_token, str) or not access_token or not isinstance(exchange_token, str) or not exchange_token.isdigit():
+    instruments = config.get("instruments", [config])
+    if not isinstance(access_token, str) or not access_token or not isinstance(instruments, list) or not 1 <= len(instruments) <= 50:
         raise ValueError("Invalid subscription")
+    subscriptions = []
+    for instrument in instruments:
+        exchange = instrument["exchange"]
+        segment = instrument["segment"]
+        exchange_token = instrument["exchangeToken"]
+        index = instrument["instrumentType"] == "IDX"
+        if exchange not in ("NSE", "BSE") or segment not in ("CASH", "FNO") or not isinstance(exchange_token, str) or not exchange_token.isdigit():
+            raise ValueError("Invalid instrument")
+        topic = (FeedConstants.get_live_index_topic if index else FeedConstants.get_live_price_topic)(
+            segment, exchange, exchange_token,
+        )
+        subscriptions.append((topic, FeedConstants.LIVE_INDEX if index else FeedConstants.LIVE_DATA, index))
 
     # NATS and the SDK use the same NKEY seed; keep credentials in memory.
     seed = os.urandom(32)
@@ -104,14 +111,10 @@ async def run(config: dict[str, Any]) -> None:
     except Exception as error:
         key_pair.wipe()
         raise FeedFailure("socket-token", error) from None
-    topic = (FeedConstants.get_live_index_topic if index else FeedConstants.get_live_price_topic)(
-        segment, exchange, exchange_token,
-    )
-    feed_type = FeedConstants.LIVE_INDEX if index else FeedConstants.LIVE_DATA
     stopped = asyncio.Event()
     closing = False
     ready = False
-    pending_tick: dict[str, Any] | None = None
+    pending_ticks: dict[int, dict[str, Any]] = {}
     client = Client()
 
     stage = "connection"
@@ -124,19 +127,22 @@ async def run(config: dict[str, Any]) -> None:
     async def disconnected() -> None:
         await failed(failure_stage="disconnected")
 
-    async def tick(message: Any) -> None:
-        nonlocal pending_tick
-        try:
-            data = get_data_dict(message.data, feed_type)
-            if not isinstance(data, dict):
-                raise ValueError("Missing tick")
-            normalized = normalize_tick(data, index)
-            if ready:
-                emit(normalized)
-            else:
-                pending_tick = normalized
-        except Exception as error:
-            await failed(error, "decoding")
+    def tick_handler(subscription: int, feed_type: str, index: bool):
+        async def tick(message: Any) -> None:
+            try:
+                data = get_data_dict(message.data, feed_type)
+                if not isinstance(data, dict):
+                    raise ValueError("Missing tick")
+                normalized = normalize_tick(data, index)
+                if "instruments" in config:
+                    normalized["subscription"] = subscription
+                if ready:
+                    emit(normalized)
+                else:
+                    pending_ticks[subscription] = normalized
+            except Exception as error:
+                await failed(error, "decoding")
+        return tick
 
     try:
         await client.connect(
@@ -153,13 +159,14 @@ async def run(config: dict[str, Any]) -> None:
             closed_cb=disconnected,
         )
         stage = "subscription"
-        await client.subscribe(topic.get_topic(), cb=tick)
+        for subscription, (topic, feed_type, index) in enumerate(subscriptions):
+            await client.subscribe(topic.get_topic(), cb=tick_handler(subscription, feed_type, index))
         await client.flush(timeout=10)
         if stopped.is_set():
             return
         emit({"type": "connected"})
         ready = True
-        if pending_tick is not None:
+        for pending_tick in pending_ticks.values():
             emit(pending_tick)
         stage = "connection"
         await stopped.wait()

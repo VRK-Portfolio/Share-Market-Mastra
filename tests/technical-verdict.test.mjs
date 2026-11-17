@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { calculateTechnicalVerdict, indicatorAssessments } from "../src/lib/market/technical-verdict.ts";
 import { stockAnalysisPrompt, recommendationForMode } from "../src/lib/market/recommendation.ts";
-import { indicatorDetails } from "../src/lib/market/indicator-details.ts";
 import { calculateShortTermScenarios } from "../src/lib/market/short-term-scenarios.ts";
+import { calculateEntryTiming } from "../src/lib/market/entry-timing.ts";
 
 const now = Date.parse("2026-11-12T11:30:00+05:30");
 function analysis(bearish = false) {
@@ -249,24 +249,76 @@ test("Gemini prompt has no raw candles/overlays, contains precomputed parameters
   assert.ok(!JSON.stringify(recommendationForMode("MIS").toJSONSchema()).includes("indicatorAssessments"));
 });
 
-test("indicator tooltips preserve supplied precision and explain periods, units and interpretation rules", () => {
-  const data = analysis();
-  data.technical.rsi = 60.12345678901234;
-  data.technical.macd = { value: 5.123456789, signal: 3.987654321, histogram: 1.135802468 };
-  assert.equal(indicatorDetails("RSI", data.technical).value, "60.12345678901234");
-  assert.match(indicatorDetails("RSI", data.technical).description, /55-70.*30-45/);
-  assert.equal(indicatorDetails("MACD", data.technical).value,
-    "Line: 5.123456789; signal: 3.987654321; histogram: 1.135802468");
-  assert.match(indicatorDetails("MACD", data.technical).description, /EMA12.*EMA26.*9-period/);
-  assert.equal(indicatorDetails("SUPERTREND", data.technical).value, "Trend line: 96; direction: bullish");
-  assert.match(indicatorDetails("SUPERTREND", data.technical).description, /period 10.*multiplier 3/);
-  assert.match(indicatorDetails("ATR", data.technical).description, /price units.*not a percentage or direction/);
-  for (const name of ["VWAP", "RSI", "ATR", "EMA20", "EMA50", "MACD", "SUPERTREND"]) {
-    assert.match(indicatorDetails(name, null).value, /Unavailable/);
-    assert.ok(indicatorDetails(name, data.technical).description.length);
+test("entry timing supports intraday BUY and short SELL only with agreement and fresh data", () => {
+  for (const bearish of [false, true]) {
+    const data = analysis(bearish);
+    const result = calculateEntryTiming(data, calculateTechnicalVerdict(data, "MIS", now), now);
+    assert.equal(result.status, "CONDITIONS_MET");
+    assert.equal(result.side, bearish ? "SELL" : "BUY");
   }
-  data.technical.rsi = null;
-  assert.match(indicatorDetails("RSI", data.technical).value, /no value is estimated/);
+  for (const change of ["conflict", "stale", "missing"]) {
+    const data = analysis();
+    if (change === "conflict") data.technical.rsi = 50;
+    if (change === "stale") data.quote.lastTradeTime = now - 60_001;
+    if (change === "missing") data.candles = [];
+    const result = calculateEntryTiming(data, calculateTechnicalVerdict(data, "MIS", now), now);
+    assert.equal(result.status, "WAIT");
+    assert.equal(result.side, null);
+    assert.ok(result.reasons.length);
+  }
+});
+
+test("entry timing observes exact IST session boundaries and weekends, independent of server timezone", () => {
+  for (const [time, expected] of [
+    ["2026-11-12T09:14:59.999+05:30", "WAIT"],
+    ["2026-11-12T09:15:00+05:30", "CONDITIONS_MET"],
+    ["2026-11-12T15:29:59.999+05:30", "CONDITIONS_MET"],
+    ["2026-11-12T15:30:00+05:30", "WAIT"],
+    ["2026-11-14T11:30:00+05:30", "WAIT"],
+    ["2026-11-15T11:30:00+05:30", "WAIT"],
+  ]) {
+    const clock = Date.parse(time);
+    const data = analysis();
+    data.fetchedAt = new Date(clock).toISOString();
+    data.quote.lastTradeTime = clock;
+    data.candles = data.candles.map((candle) => ({ ...candle, time: candle.time + (clock - now) / 1000 }));
+    assert.equal(calculateEntryTiming(data, calculateTechnicalVerdict(data, "MIS", clock), clock).status, expected, time);
+  }
+});
+
+test("carry-forward timing needs daily BUY agreement and a current quote, not merely the looser CNC freshness allowance", () => {
+  const data = analysis();
+  assert.equal(calculateEntryTiming(data, calculateTechnicalVerdict(data, "CNC", now), now).status, "WAIT");
+  data.interval = "1day";
+  data.candles = data.candles.map((candle, index) => ({ ...candle, time: (now - (59 - index) * 86_400_000) / 1000 }));
+  let result = calculateEntryTiming(data, calculateTechnicalVerdict(data, "CNC", now), now);
+  assert.equal(result.status, "CONDITIONS_MET");
+  assert.equal(result.side, "BUY");
+  assert.equal(result.provisionalDaily, true);
+  data.candles.pop();
+  result = calculateEntryTiming(data, calculateTechnicalVerdict(data, "CNC", now), now);
+  assert.equal(result.provisionalDaily, false);
+  for (const [age, expected] of [[60_000, "CONDITIONS_MET"], [60_001, "WAIT"], [86_400_000, "WAIT"]]) {
+    data.quote.lastTradeTime = now - age;
+    const verdict = calculateTechnicalVerdict(data, "CNC", now);
+    assert.equal(verdict.decision, "BUY");
+    assert.equal(calculateEntryTiming(data, verdict, now).status, expected);
+  }
+  data.quote.lastTradeTime = now + 5001;
+  assert.equal(calculateEntryTiming(data, calculateTechnicalVerdict(data, "CNC", now), now).status, "WAIT");
+});
+
+test("entry timing never promotes delivery SELL or derivative signals to new CASH entries", () => {
+  const bearish = analysis(true);
+  bearish.interval = "1day";
+  const verdict = calculateTechnicalVerdict(bearish, "CNC", now);
+  assert.equal(verdict.decision, "SELL");
+  const timing = calculateEntryTiming(bearish, verdict, now);
+  assert.equal(timing.status, "WAIT");
+  assert.equal(timing.side, null);
+  assert.ok(timing.reasons.some((reason) => /BUY only/.test(reason)));
+  const contract = fno();
+  assert.equal(calculateEntryTiming(contract, calculateTechnicalVerdict(contract, "MIS", now), now).status, "WAIT");
 });
 
 test("15/30 minute continuation scenarios use 15-minute ATR, agreement and outward price rounding", () => {

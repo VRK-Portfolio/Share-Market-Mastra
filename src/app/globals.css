@@ -77,7 +77,131 @@
     @apply rounded-xl border border-line bg-panel p-3;
   }
   .workspace-details > summary {
-    @apply cursor-pointer text-xs font-medium;
+    @apply cursor-pointer rounded-md text-xs font-medium;
+  }
+  .decision-signal {
+    @apply flex min-w-0 items-center justify-between gap-2 rounded-lg border border-line bg-inset px-3 py-2 text-xs;
+  }
+  .portfolio-bottom-bar {
+    @apply fixed inset-x-0 bottom-0 z-40 flex items-center border-t border-line bg-panel/95 py-3 shadow-lg backdrop-blur-md;
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
+  .portfolio-dock {
+    @apply relative min-w-0;
+  }
+  .portfolio-trigger {
+    @apply flex min-h-12 cursor-pointer items-center gap-2 rounded-xl border border-line bg-inset px-3 py-2 transition-colors hover:border-accent/40;
+  }
+  .portfolio-trigger[aria-expanded="true"] {
+    @apply border-accent/40 bg-accent/5;
+  }
+  .portfolio-preview {
+    @apply absolute left-0 bottom-full pb-3;
+    width: min(48rem, calc(100vw - max(1rem, env(safe-area-inset-left)) - max(1rem, env(safe-area-inset-right))));
+  }
+  .portfolio-preview-content {
+    @apply overflow-y-auto overscroll-contain rounded-2xl border border-line bg-panel p-4 text-foreground shadow-2xl sm:p-5;
+    max-height: min(40rem, calc(100dvh - 8rem - env(safe-area-inset-bottom) - env(safe-area-inset-top)));
+  }
+  .paper-trading-launcher {
+    @apply fixed z-50 inline-flex min-h-12 cursor-pointer items-center gap-2 rounded-full border border-accent/25 bg-accent px-4 py-3 text-sm font-semibold text-panel shadow-xl transition-colors hover:bg-accent/90;
+    right: max(1rem, env(safe-area-inset-right));
+    bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+  .paper-trading-popup {
+    @apply fixed inset-auto z-50 m-0 max-w-none overflow-hidden rounded-2xl border border-line bg-panel p-0 text-foreground shadow-2xl;
+    right: max(1rem, env(safe-area-inset-right));
+    bottom: calc(5.5rem + env(safe-area-inset-bottom));
+    width: min(42rem, calc(100vw - max(1rem, env(safe-area-inset-left)) - max(1rem, env(safe-area-inset-right))));
+    height: min(46rem, calc(100dvh - 7rem - env(safe-area-inset-bottom) - env(safe-area-inset-top)));
+    max-height: none;
+  }
+  .paper-trading-popup[open] {
+    display: flex;
+    flex-direction: column;
+  }
+  .paper-balance-card {
+    @apply min-w-0 rounded-xl border border-line p-3;
+  }
+  .paper-navigation {
+    @apply grid shrink-0 grid-cols-5 border-b border-line px-2;
+  }
+  .paper-navigation-tab {
+    @apply flex min-h-12 min-w-0 cursor-pointer flex-wrap items-center justify-center gap-1 border-b-2 border-transparent px-1 py-2 text-[11px] font-medium text-muted transition-colors hover:text-foreground;
+  }
+  .paper-navigation-tab[aria-selected="true"] {
+    @apply border-accent text-accent;
+  }
+  .paper-navigation-tab:focus-visible {
+    outline-offset: -4px;
+  }
+  .paper-view {
+    @apply p-4;
+  }
+  .paper-view:focus-visible {
+    outline-offset: -4px;
+  }
+  .paper-count {
+    @apply inline-flex min-w-4 items-center justify-center rounded-full bg-accent/10 px-1 text-[9px] font-semibold text-accent;
+  }
+  .paper-tag {
+    @apply inline-block rounded-md bg-inset px-1.5 py-0.5 text-[10px] font-medium text-muted;
+  }
+  .paper-notice {
+    @apply break-words rounded-lg border border-current/20 bg-inset p-3 leading-relaxed;
+  }
+  .paper-position-card {
+    @apply min-w-0 rounded-xl border border-line bg-panel p-4;
+  }
+  .paper-metrics {
+    @apply grid grid-cols-2 gap-3;
+  }
+  .paper-metrics > div {
+    @apply min-w-0;
+  }
+  .paper-metrics dt {
+    @apply text-muted;
+  }
+  .paper-metrics dd {
+    @apply mt-1 break-words font-mono font-medium;
+  }
+  .paper-form-grid {
+    @apply grid grid-cols-2 items-end gap-3;
+  }
+  .paper-form-grid > * {
+    @apply min-w-0;
+  }
+  .paper-trade-button {
+    @apply min-h-11 cursor-pointer rounded-xl border px-3 py-3 text-xs font-semibold transition-colors hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .paper-history-switch {
+    @apply min-h-10 cursor-pointer rounded-md px-2 py-2 text-xs text-muted transition-colors;
+  }
+  .paper-history-switch[aria-pressed="true"] {
+    @apply bg-panel font-medium text-foreground shadow-sm;
+  }
+  .paper-history-entry {
+    @apply min-w-0 rounded-xl border border-line p-3;
+  }
+  .paper-history-entry[open] {
+    @apply border-accent/30;
+  }
+  .paper-history-entry > summary {
+    @apply block cursor-pointer list-none rounded-md;
+  }
+  .paper-history-entry > summary::-webkit-details-marker {
+    display: none;
+  }
+  .paper-empty-state {
+    @apply rounded-xl border border-dashed border-line px-4 py-8 text-center;
+  }
+  .paper-empty-state h4 {
+    @apply mt-3 text-sm font-medium;
+  }
+  .paper-empty-state p {
+    @apply mx-auto mt-2 max-w-xs text-xs leading-relaxed text-muted;
   }
 }
 
@@ -97,7 +221,19 @@ button, a, input, select, textarea {
   -webkit-tap-highlight-color: transparent;
 }
 
-button:focus-visible, a:focus-visible, input[type="checkbox"]:focus-visible {
+button, a, summary {
+  touch-action: manipulation;
+}
+
+.font-mono, dd {
+  font-variant-numeric: tabular-nums;
+}
+
+h1, h2, h3 {
+  text-wrap: balance;
+}
+
+button:focus-visible, a:focus-visible, summary:focus-visible, input[type="checkbox"]:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
 }

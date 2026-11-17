@@ -6,6 +6,8 @@ import { growwCandlesSchema, growwQuoteSchema, marketAnalysisSchema } from "../s
 import { sessionCookie } from "../src/lib/groww/session.ts";
 import { calculateIndicators } from "../src/lib/market/indicators.ts";
 import { historicalRequests } from "../src/lib/groww/historical-requests.ts";
+import { GET as benchmarkGET } from "../src/app/api/groww/benchmark/route.ts";
+import { setImmediate } from "node:timers/promises";
 
 const originalSecret = process.env.GROWW_SESSION_SECRET;
 const token = "test-market-access-token";
@@ -86,6 +88,73 @@ test("analysis uses the session and official quote/current historical APIs and c
     assert.ok(options.signal instanceof AbortSignal);
     assert.ok(!url.href.includes(token));
   }
+});
+
+test("analysis preserves optional five-level depth and timestamps its receipt before delayed candle history", async (t) => {
+  const first = Date.parse("2026-11-17T10:00:00+05:30");
+  let clock = first;
+  t.mock.method(Date, "now", () => clock);
+  const depth = {
+    buy: Array.from({ length: 5 }, (_, i) => ({ price: 150 - i * 0.05, quantity: 100 + i })),
+    sell: Array.from({ length: 5 }, (_, i) => ({ price: 151 + i * 0.05, quantity: 200 + i })),
+  };
+  let release;
+  const delayed = new Promise((resolve) => { release = resolve; });
+  t.mock.method(globalThis, "fetch", async (url) => url.pathname === "/v1/live-data/quote"
+    ? Response.json({ ...quote, payload: { ...quote.payload, depth } }) : delayed);
+  const response = GET(request());
+  await setImmediate();
+  clock += 10_000;
+  release(Response.json(history()));
+  const body = await (await response).json();
+  assert.deepEqual(body.quote.depth, depth);
+  assert.equal(Date.parse(body.quote.depthFetchedAt), first);
+  assert.equal(Date.parse(body.fetchedAt), clock);
+  assert.ok(marketAnalysisSchema.safeParse(body).success);
+  assert.equal(growwQuoteSchema.safeParse({ ...quote, payload: {
+    ...quote.payload, depth: { ...depth, buy: [{ price: 100, quantity: -1 }] },
+  } }).success, false);
+  assert.equal(growwQuoteSchema.parse(quote).depth, undefined);
+});
+
+test("sector benchmarks use authenticated catalogue-verified indices, not arbitrary stock symbols", async (t) => {
+  const csv = [
+    "exchange,trading_symbol,groww_symbol,underlying_symbol,instrument_type,expiry_date,strike_price,lot_size,tick_size,segment,name",
+    "NSE,TESTINDEX,NSE-TESTINDEX,,IDX,,,1,0.05,CASH,Test Sector Index",
+    "NSE,TESTEQ,NSE-TESTEQ,,EQ,,,1,0.05,CASH,Test Stock",
+    "BSE,BSEINDEX,BSE-BSEINDEX,,IDX,,,1,0.05,CASH,Test BSE Index",
+  ].join("\n");
+  const upstream = t.mock.method(globalThis, "fetch", async (input) =>
+    String(input).includes("/instruments/instrument.csv") ? new Response(csv) : Response.json(quote));
+  const benchmarkRequest = (query, authenticated = true) => new Request(`http://localhost/api/groww/benchmark?${query}`, {
+    headers: authenticated ? { cookie: sessionCookie(token).split(";")[0] } : {},
+  });
+  assert.equal((await benchmarkGET(benchmarkRequest("symbol=TESTINDEX", false))).status, 401);
+  assert.equal((await benchmarkGET(benchmarkRequest("exchange=MCX"))).status, 400);
+  assert.equal(upstream.mock.callCount(), 0);
+  const list = await benchmarkGET(benchmarkRequest("exchange=NSE"));
+  assert.equal(list.status, 200);
+  assert.equal(list.headers.get("cache-control"), "no-store");
+  assert.deepEqual((await list.json()).indices.map((item) => item.tradingSymbol), ["TESTINDEX"]);
+  const calls = upstream.mock.callCount();
+  assert.equal((await benchmarkGET(benchmarkRequest("symbol=TESTEQ"))).status, 404);
+  assert.equal(upstream.mock.callCount(), calls);
+  const snapshot = await benchmarkGET(benchmarkRequest("symbol=TESTINDEX"));
+  const body = await snapshot.json();
+  assert.equal(snapshot.status, 200);
+  assert.equal(body.symbol, "TESTINDEX");
+  assert.equal(body.price, quote.payload.last_price);
+  const [url, options] = upstream.mock.calls.at(-1).arguments;
+  assert.equal(url.searchParams.get("segment"), "CASH");
+  assert.equal(url.searchParams.get("trading_symbol"), "TESTINDEX");
+  assert.equal(options.headers.Authorization, `Bearer ${token}`);
+  assert.equal((await benchmarkGET(benchmarkRequest("symbol=TESTINDEX&exchange=BSE"))).status, 404);
+  upstream.mock.mockImplementation(async () => Response.json({
+    status: "FAILURE", error: { code: "DENIED", message: "Index quote unavailable." },
+  }, { status: 403 }));
+  const denied = await benchmarkGET(benchmarkRequest("symbol=TESTINDEX"));
+  assert.equal(denied.status, 403);
+  assert.match((await denied.json()).error, /Index quote unavailable/);
 });
 
 test("normalizes exact symbols and encodes ampersands without inventing instrument names", async (t) => {

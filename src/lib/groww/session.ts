@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 const cookieName = "groww-session";
 export const sessionResponseHeaders = { "Cache-Control": "no-store" };
 
-function sessionKey() {
+export function sessionKey() {
   const secret = process.env.GROWW_SESSION_SECRET;
   if (!secret || secret.length < 32) {
     throw new Error("GROWW_SESSION_SECRET must contain at least 32 characters.");
@@ -47,7 +47,14 @@ export function sessionToken(request: Request): string | null {
 
 export function isSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
-  return !origin || origin === new URL(request.url).origin;
+  if (!origin) return true;
+  try {
+    const source = new URL(origin);
+    const target = new URL(request.url);
+    return source.protocol === target.protocol && source.host === (request.headers.get("host") ?? target.host);
+  } catch {
+    return false;
+  }
 }
 
 export function sessionConfigurationError() {

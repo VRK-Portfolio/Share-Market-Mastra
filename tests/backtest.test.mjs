@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { backtestTechnicalRules, summarizeBacktestTrades } from "../src/lib/market/backtest.ts";
 import { calculateIndicators } from "../src/lib/market/indicators.ts";
+import { calculateTechnicalVerdict } from "../src/lib/market/technical-verdict.ts";
+import { buildFifteenMinuteHistory, calculateFifteenMinuteOutlook, rsiCloseReferences } from "../src/lib/market/fifteen-minute-outlook.ts";
 
 function fixture({ bearish = false, price = 100 } = {}) {
   const candles = [];
@@ -47,6 +49,171 @@ function frozenAfterEntry(data, mode) {
   }
   return first;
 }
+
+function studyData(raw = fixture(), rsi = 60) {
+  const price = raw.candles.at(-1).close;
+  const at = raw.candles.at(-1).time * 1000 + 900_000;
+  return {
+    ...raw, fetchedAt: new Date(at).toISOString(),
+    quote: { ...raw.quote, price, lastTradeTime: at },
+    technical: { ...raw.technical, rsi, vwap: price - 2, ema20: price - 3, ema50: price - 5,
+      atr: 2, macd: { value: 5, signal: 3, histogram: 2 }, supertrend: { value: price - 4, direction: "bullish" } },
+  };
+}
+const outlookFor = (data, history = buildFifteenMinuteHistory(data), mode = "MIS", now = Date.parse(data.fetchedAt)) =>
+  calculateFifteenMinuteOutlook(data, history, calculateTechnicalVerdict(data, mode, now), now);
+
+test("15-minute success counts target attainment, stops and timeouts with an exact one-bar horizon", () => {
+  const data = studyData();
+  const history = buildFifteenMinuteHistory(data);
+  assert.equal(history.available, true);
+  const outlook = outlookFor(data, history);
+  assert.equal(outlook.available, true);
+  const buys = history.observations.filter((sample) => sample.side === "BUY");
+  assert.ok(buys.length > 0);
+  assert.equal(outlook.trade.total, buys.length);
+  assert.equal(outlook.trade.wins, buys.filter((sample) => sample.outcome === "TARGET").length);
+  assert.equal(outlook.trade.total, outlook.trade.wins + outlook.trade.stopped + outlook.trade.neither);
+  assert.equal(outlook.trade.winRate, outlook.trade.wins / buys.length * 100);
+  assert.equal(Date.parse(outlook.endsAt) - Date.parse(data.fetchedAt), 900_000);
+  for (const sample of history.observations) {
+    const next = data.candles.find((bar) => bar.time * 1000 === sample.time);
+    const previous = data.candles.find((bar) => bar.time * 1000 === sample.time - 900_000);
+    assert.ok(next && previous);
+    assert.equal(istDate(next), istDate(previous));
+    assert.equal(sample.returnPercent, (next.close / previous.close - 1) * 100);
+  }
+});
+
+test("15-minute studies are leakage-free and resolve known gaps before stop-first intrabar ambiguity", () => {
+  const data = studyData();
+  const baseline = buildFifteenMinuteHistory(data);
+  assert.deepEqual(buildFifteenMinuteHistory({
+    ...data, technical: { ...data.technical, rsi: null, atr: null }, quote: { ...data.quote, price: 1 },
+  }), baseline);
+  const sample = baseline.observations.find((item) => item.side === "BUY");
+  assert.ok(sample);
+  const nextIndex = data.candles.findIndex((bar) => bar.time * 1000 === sample.time);
+  const prefix = data.candles.slice(0, nextIndex);
+  const signal = calculateTechnicalVerdict({
+    ...data, candles: prefix, technical: calculateIndicators(prefix), fetchedAt: new Date(sample.time).toISOString(),
+    quote: { ...data.quote, price: prefix.at(-1).close, lastTradeTime: sample.time },
+  }, "MIS", sample.time);
+  Object.assign(data.candles[nextIndex], {
+    open: signal.entryPrice, close: signal.entryPrice, low: signal.stopLoss - 1, high: signal.targetPrices[0] + 1,
+  });
+  assert.equal(buildFifteenMinuteHistory(data).observations.find((item) => item.time === sample.time).outcome, "STOP");
+  Object.assign(data.candles[nextIndex], {
+    open: signal.targetPrices[0] + 1, high: signal.targetPrices[0] + 2,
+  });
+  assert.equal(buildFifteenMinuteHistory(data).observations.find((item) => item.time === sample.time).outcome, "TARGET");
+  assert.ok(outlookFor(data).trade.wins > 0);
+});
+
+test("RSI extreme transitions count actual opposite-zone closes, not small countertrend price moves", () => {
+  for (const overbought of [true, false]) {
+    const raw = fixture();
+    raw.candles = raw.candles.map((bar, index) => {
+      const close = index === 70 ? overbought ? 10 : 3000 : overbought ? 100 + index : 1000 - index;
+      return { ...bar, open: close, close, high: close + 1, low: close - 1 };
+    });
+    const data = studyData(raw, overbought ? 80 : 20);
+    const history = buildFifteenMinuteHistory(data);
+    const transition = history.observations.find((sample) => sample.time === raw.candles[70].time * 1000);
+    assert.ok(overbought ? transition.rsi >= 70 && transition.nextRsi <= 30
+      : transition.rsi <= 30 && transition.nextRsi >= 70);
+    assert.ok(outlookFor(data, history).reversal.wins > 0);
+  }
+});
+
+test("RSI reversal rates condition on the current extreme and do not invent a rate for middle RSI or no samples", () => {
+  const history = buildFifteenMinuteHistory(studyData());
+  for (const rsi of [30, 70]) {
+    const outlook = outlookFor(studyData(fixture(), rsi), history);
+    const matching = history.observations.filter((sample) => rsi === 70 ? sample.rsi >= 70 : sample.rsi <= 30);
+    const hits = matching.filter((sample) => rsi === 70 ? sample.nextRsi <= 30 : sample.nextRsi >= 70).length;
+    assert.equal(outlook.reversal.total, matching.length);
+    assert.equal(outlook.reversal.wins, hits);
+    assert.equal(outlook.reversal.winRate, matching.length ? hits / matching.length * 100 : null);
+    if (matching.length) {
+      assert.equal(outlook.reversal.confidenceInterval.length, 2);
+      assert.ok(outlook.reversal.confidenceInterval[0] <= outlook.reversal.winRate);
+      assert.ok(outlook.reversal.confidenceInterval[1] >= outlook.reversal.winRate);
+    }
+  }
+  assert.equal(outlookFor(studyData(fixture(), 60), history).reversal, null);
+  const raw = fixture();
+  raw.candles = raw.candles.slice(0, 51);
+  const empty = outlookFor(studyData(raw, 80));
+  assert.equal(empty.available, true);
+  assert.equal(empty.reversal.winRate, null);
+  assert.equal(empty.reversal.total, 0);
+  assert.equal(empty.prices, null);
+});
+
+test("historical analogue price ranges require 30 same-zone samples and scale to the live reference without changing observations", () => {
+  const raw = fixture();
+  const history = buildFifteenMinuteHistory(studyData(raw));
+  const groups = new Map();
+  for (const sample of history.observations) {
+    const key = sample.rsi >= 70 ? 80 : sample.rsi <= 30 ? 10 : Math.floor(sample.rsi / 10) * 10 + 5;
+    groups.set(key, (groups.get(key) ?? 0) + 1);
+  }
+  const [rsi, total] = [...groups].sort((a, b) => b[1] - a[1])[0];
+  assert.ok(total >= 30);
+  const data = studyData(raw, rsi);
+  const first = outlookFor(data, history);
+  assert.equal(first.priceSamples, total);
+  assert.ok(first.prices.lower <= first.prices.median && first.prices.median <= first.prices.upper);
+  const scaled = outlookFor({ ...data, quote: { ...data.quote, price: data.quote.price * 2 } }, history);
+  assert.equal(scaled.priceSamples, total);
+  assert.ok(Math.abs(scaled.prices.median - first.prices.median * 2) <= 0.02);
+  const small = { ...history, observations: history.observations.filter((sample) =>
+    rsi === 80 ? sample.rsi >= 70 : rsi === 10 ? sample.rsi <= 30 : Math.floor(sample.rsi / 10) === Math.floor(rsi / 10)).slice(0, 29) };
+  const insufficient = outlookFor(data, small);
+  assert.equal(insufficient.prices, null);
+  assert.match(insufficient.priceReason, /29.*30/);
+});
+
+test("15-minute evidence rejects missing, stale or wrong-timeframe data and respects the exact session horizon", () => {
+  const data = studyData();
+  const history = buildFifteenMinuteHistory(data);
+  assert.equal(buildFifteenMinuteHistory({ ...data, interval: "1hour" }).available, false);
+  assert.equal(buildFifteenMinuteHistory({ ...data, omittedCandles: 1 }).available, false);
+  assert.equal(buildFifteenMinuteHistory({ ...data, candles: data.candles.filter((_, index) => index !== 60) }).available, false);
+  assert.equal(buildFifteenMinuteHistory({ ...data, candles: [{ ...data.candles[0], time: NaN }] }).available, false);
+  const unfinished = { ...data.candles.at(-1), time: Date.parse(data.fetchedAt) / 1000, close: 1, low: 1 };
+  assert.deepEqual(buildFifteenMinuteHistory({ ...data, candles: [...data.candles, unfinished] }), history);
+  const now = Date.parse(data.fetchedAt);
+  assert.equal(outlookFor(data, history, "MIS", now + 60_000).available, true);
+  assert.equal(outlookFor(data, history, "MIS", now + 60_001).available, false);
+  assert.equal(calculateFifteenMinuteOutlook({ ...data, quote: { ...data.quote, lastTradeTime: NaN } }, history, null, now).available, false);
+  assert.equal(outlookFor({ ...data, technical: { ...data.technical, rsi: null } }, history).available, false);
+  assert.equal(outlookFor(data, history, "CNC").trade, null);
+  const raw = fixture();
+  raw.candles = raw.candles.slice(0, 249);
+  const closing = studyData(raw);
+  const closingTime = Date.parse(closing.fetchedAt);
+  assert.equal(new Date(closingTime + 330 * 60_000).toISOString().slice(11, 16), "15:15");
+  assert.equal(outlookFor(closing).available, true);
+  assert.equal(outlookFor(closing, buildFifteenMinuteHistory(closing), "MIS", closingTime + 1).available, false);
+});
+
+test("RSI hypothetical prices solve Wilder RSI for the next close, not an arbitrary ATR prediction", () => {
+  const closes = Array.from({ length: 70 }, (_, index) => 100 + index * 0.03 + Math.sin(index * 1.8));
+  const references = rsiCloseReferences(closes, 0.000001);
+  assert.ok(references);
+  for (const [target, price] of [[70, references.overbought], [30, references.oversold]]) {
+    const candles = [...closes, price].map((close, index) => ({
+      time: index * 900 + 1, open: close, close, high: close + 1, low: close - 1, volume: 100,
+    }));
+    assert.ok(Math.abs(calculateIndicators(candles).rsi - target) <= 0.01);
+  }
+  assert.equal(rsiCloseReferences(Array(60).fill(100), 0.01), null);
+  assert.equal(rsiCloseReferences(closes, 0), null);
+  const nearZero = closes.map((close) => close - 100 + 2);
+  assert.equal(rsiCloseReferences(nearZero, 0.01).oversold, null);
+});
 
 test("walk-forward signals use closed prefixes, enter next-open and ignore current live indicators", () => {
   const data = fixture();

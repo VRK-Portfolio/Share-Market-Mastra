@@ -6,6 +6,10 @@ export { stockSymbolSchema } from "./instrument-schemas.ts";
 
 const number = z.number().finite();
 const price = number.nonnegative();
+export const marketDepthSchema = z.object({
+  buy: z.array(z.object({ price, quantity: price.int() })).max(50),
+  sell: z.array(z.object({ price, quantity: price.int() })).max(50),
+});
 export const marketRequestSchema = z.object({
   symbol: stockSymbolSchema,
   exchange: z.enum(["NSE", "BSE"]).default("NSE"),
@@ -35,6 +39,7 @@ const quoteResponseSchema = z.object({
     ohlc: z.union([ohlcSchema, stringOhlcSchema]),
     volume: price.nullish(),
     last_trade_time: price.int().max(8_640_000_000_000_000).nullish(),
+    depth: marketDepthSchema.nullish(),
   }),
 });
 function normalizeQuote(payload: z.infer<typeof quoteResponseSchema>["payload"]): Quote {
@@ -48,6 +53,7 @@ function normalizeQuote(payload: z.infer<typeof quoteResponseSchema>["payload"])
   previousClose: payload.ohlc.close,
   volume: payload.volume ?? null,
   lastTradeTime: payload.last_trade_time ?? null,
+  ...(payload.depth ? { depth: payload.depth } : {}),
   };
 }
 export const growwQuoteSchema = quoteResponseSchema.transform(({ payload }) => normalizeQuote(payload));
@@ -128,6 +134,7 @@ export const marketAnalysisSchema = z.object({
     open: price, high: price, low: price, previousClose: price,
     volume: price.nullable(), lastTradeTime: price.nullable(),
     openInterest: price.nullish(), oiDayChange: number.nullish(), impliedVolatility: price.nullish(),
+    depth: marketDepthSchema.optional(), depthFetchedAt: z.iso.datetime().optional(),
   }),
   candles: z.array(candleSchema),
   omittedCandles: z.number().int().nonnegative().optional(),

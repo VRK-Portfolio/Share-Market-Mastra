@@ -26,6 +26,8 @@ export interface Quote {
   openInterest?: number | null;
   oiDayChange?: number | null;
   impliedVolatility?: number | null;
+  depth?: { buy: { price: number; quantity: number }[]; sell: { price: number; quantity: number }[] };
+  depthFetchedAt?: string;
 }
 
 export interface Overlay {

@@ -93,6 +93,48 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(feed.failure_message(GrowwAPIException(code=token, msg=token), "socket-token", token).get("upstreamCode"), None)
         self.assertEqual(feed.failure_message(GrowwAPIException(code="GA005", msg=token), "socket-token", token)["upstreamCode"], "GA005")
 
+    def test_multiple_equities_share_one_connection_and_preserve_tick_identity(self):
+        messages = []
+        instances = []
+
+        class Client:
+            is_closed = False
+
+            def __init__(self):
+                self.topics = []
+                instances.append(self)
+
+            async def connect(self, **kwargs):
+                self.options = kwargs
+
+            async def subscribe(self, topic, cb):
+                self.topics.append(topic)
+                packet = StocksSocketResponseProtoDto()
+                packet.stockLivePrice.tsInMillis = 1_800_000_000_000
+                packet.stockLivePrice.ltp = 100 * len(self.topics)
+                await cb(SimpleNamespace(data=packet.SerializeToString()))
+
+            async def flush(self, timeout):
+                asyncio.get_running_loop().call_soon(lambda: asyncio.create_task(self.options["disconnected_cb"]()))
+
+            async def close(self):
+                self.is_closed = True
+
+        with patch.object(GrowwAPI, "generate_socket_token", return_value={"token": "fake-test-socket-jwt"}) as auth, patch("nats.aio.client.Client", Client), patch.object(feed, "emit", messages.append):
+            asyncio.run(feed.run({
+                "accessToken": "fake-test-token",
+                "instruments": [
+                    {"exchange": "NSE", "segment": "CASH", "exchangeToken": "2885", "instrumentType": "EQ"},
+                    {"exchange": "BSE", "segment": "CASH", "exchangeToken": "500325", "instrumentType": "EQ"},
+                ],
+            }))
+        self.assertEqual(len(instances), 1)
+        self.assertEqual(auth.call_count, 1)
+        self.assertEqual(len(instances[0].topics), 2)
+        self.assertEqual([(item["subscription"], item["price"]) for item in messages if item["type"] == "tick"],
+                         [(0, 100), (1, 200)])
+        self.assertTrue(instances[0].is_closed)
+
     def test_invalid_socket_token_response_is_attributed_to_authentication_stage(self):
         with patch.object(GrowwAPI, "generate_socket_token", return_value={}), self.assertRaises(feed.FeedFailure) as caught:
             asyncio.run(feed.run({

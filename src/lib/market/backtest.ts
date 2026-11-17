@@ -25,6 +25,10 @@ export interface BacktestTrade {
 export function summarizeBacktestTrades(trades: BacktestTrade[]) {
   const wins = trades.filter((trade) => trade.netReturnPercent > 0).length;
   const total = trades.length;
+  return summarizeBinaryOutcomes(wins, total);
+}
+
+export function summarizeBinaryOutcomes(wins: number, total: number) {
   if (!total) return { total, wins, winRate: null, confidenceInterval: null };
   const proportion = wins / total;
   const zSquared = 1.96 ** 2;

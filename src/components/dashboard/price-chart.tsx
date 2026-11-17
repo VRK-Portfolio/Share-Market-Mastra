@@ -46,7 +46,7 @@ export function PriceChart({ data, interval, onInterval }: {
   return (
     <section className="panel overflow-hidden" aria-labelledby="chart-title">
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 pt-3">
-        <div><h2 id="chart-title" className="text-sm font-semibold">{data?.symbol ?? "Stock"} <span className="px-1 text-muted">/</span> Candlesticks &amp; overlays</h2><p className="mt-1 text-[11px] text-muted">{data ? `${data.exchange} · INR · Last ${candles.length} candles` : "Price action, volume and technical context"}</p></div>
+        <div><h2 id="chart-title" className="text-sm font-semibold">Price action</h2><p className="mt-1 text-[11px] text-muted">{data ? `${data.symbol} · ${data.exchange} · ${candles.length} candles` : "Candles, volume & overlays"}</p></div>
         <div className="flex gap-1 rounded-lg border border-line bg-inset p-1" aria-label="Candle interval">
           {intervalOptions.map((option) => <button key={option.value} type="button" onClick={() => { setHovered(null); onInterval(option.value); }} aria-pressed={option.value === interval} className={`rounded-md px-4 py-1.5 font-mono text-xs transition-colors ${option.value === interval ? "bg-accent text-white shadow-sm" : "text-muted hover:text-foreground"}`}>{option.label}</button>)}
         </div>
@@ -55,9 +55,9 @@ export function PriceChart({ data, interval, onInterval }: {
         <div className="flex flex-wrap gap-4">{(Object.keys(overlays) as (keyof typeof overlays)[]).map((key) => <label key={key} className="flex cursor-pointer items-center gap-2 text-muted"><input type="checkbox" className="size-3 accent-accent" checked={overlays[key]} onChange={() => setOverlays((current) => ({ ...current, [key]: !current[key] }))} /><span className="h-0.5 w-3" style={{ backgroundColor: overlayColors[key] }} />{key === "vwap" ? "VWAP" : key === "ema20" ? "EMA 20" : "SuperTrend"}</label>)}</div>
         <p className="flex flex-wrap gap-3 font-mono text-muted">{selected ? <><span>O <b className="text-foreground">{decimal(selected.open)}</b></span><span>H <b className="text-foreground">{decimal(selected.high)}</b></span><span>L <b className="text-foreground">{decimal(selected.low)}</b></span><span>C <b className="text-foreground">{decimal(selected.close)}</b></span></> : "OHLC -- / -- / -- / --"}</p>
       </div>
-      <div className="relative mx-3 mb-2 min-h-[220px]">
+      <div className="relative mx-3 mb-2 min-h-[240px]">
         {!candles.length && <p className="absolute inset-0 flex items-center justify-center text-sm text-muted">No historical candles loaded.</p>}
-        <svg viewBox={`0 0 ${width} ${height}`} className="h-[220px] w-full" role="img" aria-label={data ? `${data.symbol} candlestick chart, ${candles.length} candles. Last close ${money(candles.at(-1)?.close)}.` : "No market data loaded"} onMouseLeave={() => setHovered(null)}>
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-[240px] w-full xl:h-[280px]" role="img" aria-label={data ? `${data.symbol} candlestick chart, ${candles.length} candles. Last close ${money(candles.at(-1)?.close)}.` : "No market data loaded"} onMouseLeave={() => setHovered(null)}>
           {[0, 1, 2, 3, 4].map((line) => <g key={line}><line x1={left} x2={width - right} y1={top + chartHeight * line / 4} y2={top + chartHeight * line / 4} stroke="var(--line)" strokeDasharray="3 5" /><text x={width - right + 14} y={top + chartHeight * line / 4 + 4} fill="var(--muted)" fontSize="10" fontFamily="monospace">{candles.length ? decimal(max - (max - min) * line / 4) : "--"}</text></g>)}
           {candles.map((candle, index) => {
             const color = candle.close >= candle.open ? "var(--positive)" : "var(--negative)";
@@ -68,7 +68,7 @@ export function PriceChart({ data, interval, onInterval }: {
           {hovered && candles.includes(hovered) && <line x1={x(candles.indexOf(hovered))} x2={x(candles.indexOf(hovered))} y1={top} y2={height - bottom} stroke="var(--muted)" strokeDasharray="3 3" pointerEvents="none" />}
         </svg>
       </div>
-      <div className="flex flex-wrap justify-between gap-2 border-t border-line px-4 py-2 text-[10px] text-muted"><span>Volume shown below price · All times IST{missingVolumes ? ` · ${missingVolumes} displayed candles have unavailable volume; no volume bar is drawn for them.` : ""}</span><span>Groww historical candles · Snapshot, not streaming</span></div>
+      <div className="flex flex-wrap justify-between gap-2 border-t border-line px-4 py-2 text-[10px] text-muted"><span>IST · Volume below price{missingVolumes ? ` · ${missingVolumes} volume bars unavailable` : ""}</span><span>Groww candle snapshot</span></div>
     </section>
   );
 }

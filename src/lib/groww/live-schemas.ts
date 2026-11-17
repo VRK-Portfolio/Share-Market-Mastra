@@ -10,6 +10,9 @@ export const feedInstrumentSchema = z.object({
   instrumentType: z.enum(["EQ", "IDX", "FUT", "CE", "PE"]),
 });
 export type FeedInstrument = z.infer<typeof feedInstrumentSchema>;
+export const feedSelectionSchema = feedInstrumentSchema.pick({ symbol: true, exchange: true, segment: true });
+export type FeedSelection = z.infer<typeof feedSelectionSchema>;
+export const feedSelectionsSchema = z.array(feedSelectionSchema.extend({ segment: z.enum(["CASH", "FNO"]).default("CASH") }).strict()).min(1).max(50);
 export const feedDiagnosticSchema = z.object({
   stage: z.enum(["startup", "socket-token", "connection", "subscription", "decoding", "disconnected"]).optional(),
   failureType: z.enum(["missing-dependency", "authentication", "rate-limit", "timeout", "tls", "invalid-tick",
@@ -20,13 +23,13 @@ export const feedDiagnosticSchema = z.object({
 export type FeedDiagnostic = z.infer<typeof feedDiagnosticSchema>;
 export const workerMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("connected") }),
-  z.object({ type: z.literal("tick"), price: z.number().finite().positive(), tradeTime: z.number().int().positive().max(8_640_000_000_000_000) }),
+  z.object({ type: z.literal("tick"), price: z.number().finite().positive(), tradeTime: z.number().int().positive().max(8_640_000_000_000_000), subscription: z.number().int().min(0).max(49).optional() }),
   feedDiagnosticSchema.extend({ type: z.literal("error"), code: z.union([z.literal(401), z.literal(403), z.literal(429), z.literal(502), z.literal(503), z.literal(504)]) }),
 ]);
 const identity = feedInstrumentSchema.pick({ symbol: true, exchange: true, segment: true });
 export const liveEventSchema = z.discriminatedUnion("type", [
   identity.extend({ type: z.literal("connected") }),
-  identity.extend({ type: z.literal("tick"), price: z.number().finite().positive(), tradeTime: z.number().int().positive().max(8_640_000_000_000_000), receivedAt: z.iso.datetime() }),
+  identity.extend({ type: z.literal("tick"), price: z.number().finite().positive(), tradeTime: z.number().int().positive().max(8_640_000_000_000_000), receivedAt: z.iso.datetime(), paperQuoteProof: z.string().min(1).max(2048).optional() }),
   identity.extend({ ...feedDiagnosticSchema.shape, type: z.literal("error"), code: z.number().int(), error: z.string().min(1).max(300) }),
 ]);
 export type LiveTick = Extract<z.infer<typeof liveEventSchema>, { type: "tick" }>;

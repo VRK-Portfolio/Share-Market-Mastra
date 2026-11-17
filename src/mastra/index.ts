@@ -8,11 +8,12 @@ import { Observability, MastraStorageExporter, MastraPlatformExporter, Sensitive
 import { weatherWorkflow } from './workflows/weather-workflow';
 import { weatherAgent } from './agents/weather-agent';
 import { stockAnalysisAgent } from './agents/stock-analysis-agent';
+import { newsSentimentAgent } from './agents/news-sentiment-agent';
 
 
 export const mastra = new Mastra({
   workflows: { weatherWorkflow },
-  agents: { weatherAgent, stockAnalysisAgent },
+  agents: { weatherAgent, stockAnalysisAgent, newsSentimentAgent },
   storage: new MastraCompositeStore({
     id: 'composite-storage',
     default: new LibSQLStore({

@@ -35,16 +35,17 @@ export async function loadMarketAnalysis(
     end_time: String(end), candle_interval: interval,
   }).toString();
   const [rawQuote, rawCandles] = await Promise.all([
-    growwJson(quoteUrl, token, "quote", signal),
+    growwJson(quoteUrl, token, "quote", signal).then((body) => ({ body, receivedAt: new Date(Date.now()).toISOString() })),
     historicalRequests.run(token, signal, () => growwJson(candlesUrl, token, "historical candles", signal)),
   ]);
-  const quote = (segment === "FNO" ? growwFnoQuoteSchema : growwQuoteSchema).safeParse(rawQuote);
+  const quote = (segment === "FNO" ? growwFnoQuoteSchema : growwQuoteSchema).safeParse(rawQuote.body);
   if (!quote.success) throw new MarketValidationError("quote", quote.error);
   const history = (segment === "FNO" ? growwFnoCandleHistorySchema : growwCandleHistorySchema).safeParse(rawCandles);
   if (!history.success) throw new MarketValidationError("candles", history.error);
   const analysis = marketAnalysisSchema.safeParse({
-    ...selection, instrument, fetchedAt: new Date().toISOString(),
-    quote: quote.data, ...history.data, technical: calculateIndicators(history.data.candles),
+    ...selection, instrument, fetchedAt: new Date(Date.now()).toISOString(),
+    quote: { ...quote.data, ...(quote.data.depth ? { depthFetchedAt: rawQuote.receivedAt } : {}) },
+    ...history.data, technical: calculateIndicators(history.data.candles),
   });
   if (!analysis.success) throw new MarketValidationError("analysis", analysis.error);
   return analysis.data;
