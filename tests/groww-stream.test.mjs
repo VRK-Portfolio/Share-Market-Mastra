@@ -142,7 +142,7 @@ test("batch streams deduplicate stocks and route signed ticks by subscription ov
   await reader.cancel();
 });
 
-test("mixed CASH and FNO batch streams preserve segment identities and sign only cash equity execution quotes", async t => {
+test("mixed CASH and FNO batch streams preserve segment identities and sign contract execution quotes", async t => {
   t.mock.method(globalThis, "fetch", async () => new Response(catalog));
   const { worker, spawn } = mockWorker(t);
   const query = new URLSearchParams({ instruments: JSON.stringify([
@@ -162,7 +162,9 @@ test("mixed CASH and FNO batch streams preserve segment identities and sign only
   const tick = new LiveEventDecoder().push(new TextDecoder().decode((await reader.read()).value))[0];
   assert.equal(tick.symbol, "NIFTY99NOVFUT");
   assert.equal(tick.segment, "FNO");
-  assert.equal(tick.paperQuoteProof, undefined);
+  assert.deepEqual(verifyExecutionQuote("fake-stream-test-token", tick.paperQuoteProof), {
+    symbol: "NIFTY99NOVFUT", exchange: "NSE", segment: "FNO", price: 24000, tradeTime: clock, issuedAt: clock,
+  });
   await reader.cancel();
 });
 

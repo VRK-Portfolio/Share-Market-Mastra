@@ -272,7 +272,9 @@ test("entry timing observes exact IST session boundaries and weekends, independe
   for (const [time, expected] of [
     ["2026-11-12T09:14:59.999+05:30", "WAIT"],
     ["2026-11-12T09:15:00+05:30", "CONDITIONS_MET"],
-    ["2026-11-12T15:29:59.999+05:30", "CONDITIONS_MET"],
+    ["2026-11-12T15:19:59.999+05:30", "CONDITIONS_MET"],
+    ["2026-11-12T15:20:00+05:30", "WAIT"],
+    ["2026-11-12T15:29:59.999+05:30", "WAIT"],
     ["2026-11-12T15:30:00+05:30", "WAIT"],
     ["2026-11-14T11:30:00+05:30", "WAIT"],
     ["2026-11-15T11:30:00+05:30", "WAIT"],

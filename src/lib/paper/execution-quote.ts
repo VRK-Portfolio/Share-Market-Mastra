@@ -4,7 +4,7 @@ import { feedInstrumentSchema } from "../groww/live-schemas.ts";
 import { sessionKey } from "../groww/session.ts";
 
 const executionQuoteSchema = feedInstrumentSchema.pick({ symbol: true, exchange: true }).extend({
-  segment: z.literal("CASH"), price: z.number().finite().positive(),
+  segment: z.enum(["CASH", "FNO"]), price: z.number().finite().positive(),
   tradeTime: z.number().safe().int().positive(), issuedAt: z.number().safe().int().positive(),
 }).strict();
 type ExecutionQuote = z.infer<typeof executionQuoteSchema>;

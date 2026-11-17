@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Icon } from "./icons";
 import { GrowwConnection } from "./groww-connection";
 import { TerminalSessionControls } from "../auth/terminal-session-controls";
@@ -10,6 +11,7 @@ export function Header({ connected, onConnectionChange, terminalExpiresAt }: {
   onConnectionChange: (connected: boolean) => void;
   terminalExpiresAt: string;
 }) {
+  const pathname = usePathname();
   function toggleTheme() {
     const next = document.documentElement.classList.contains("dark") ? "light" : "dark";
     document.documentElement.classList.toggle("dark", next === "dark");
@@ -26,6 +28,11 @@ export function Header({ connected, onConnectionChange, terminalExpiresAt }: {
           <span className="text-xl font-bold tracking-tight sm:text-2xl">Trade<span className="text-accent">Terminal</span></span>
         </Link>
         <div className="flex flex-wrap items-center gap-3 sm:gap-5">
+          <nav aria-label="Trading workspaces" className="flex flex-wrap items-center gap-3 text-xs font-medium">
+            <Link href="/" aria-current={pathname === "/" ? "page" : undefined} className={pathname === "/" ? "text-accent" : "text-muted hover:text-foreground"}>Stocks</Link>
+            <Link href="/fno" aria-current={pathname === "/fno" ? "page" : undefined} className={pathname === "/fno" ? "text-accent" : "text-muted hover:text-foreground"}>Futures &amp; options</Link>
+          </nav>
+          <Link href="/risk" className="text-xs font-medium text-accent underline-offset-4 hover:underline">Risk &amp; performance</Link>
           <GrowwConnection connected={connected} onConnectionChange={onConnectionChange} />
           <button type="button" className="icon-button" onClick={toggleTheme} aria-label="Toggle light/dark theme">
             <Icon name="sun" className="hidden size-[18px] dark:block" />

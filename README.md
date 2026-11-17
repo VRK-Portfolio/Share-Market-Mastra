@@ -217,16 +217,17 @@ same-day and at most 60 seconds old, rounded to paise, during weekday
 09:15-15:30 IST sessions. Fresh quotes are still required on exchange holidays;
 no holiday calendar is inferred.
 
-MIS permits longs and collateral-backed shorts; CNC permits buys and exits
-against this paper account's holdings only. New MIS longs and shorts reserve 20%
+For CASH stocks, MIS permits longs and collateral-backed shorts; CNC permits buys and exits
+against this paper account's holdings only. New CASH MIS longs and shorts reserve 20%
 of entry notional (fixed simulated 5x leverage); CNC purchases reserve 100%.
 The market price does not change between products on the same exchange.
 The form compares full entry value, intraday margin and carry-forward cost before
 submission. This fixed paper margin is not verified broker/stock eligibility.
 Entry basis and reserved collateral are stored separately: P&L uses the full
 quantity and actual entry price, never a discounted share price. Opposite trades reduce a position and realize
-P&L; close a position before reversing it. There are no fees, slippage or liquidity
-modelling, maintenance-margin checks or margin-call liquidation. Leverage magnifies
+P&L; close a position before reversing it. New portfolio fills apply estimated
+fees and adverse slippage as described below; existing fills are not rewritten.
+There is no liquidity modelling, maintenance-margin check or margin-call liquidation. Leverage magnifies
 losses as well as gains relative to reserved cash. New MIS entries stop at **15:20 IST**. With automatic execution enabled,
 MIS positions square off at the first fresh regular-session price at/after 15:20.
 If the terminal was closed, disconnected or lacked fresh prices, overdue MIS
@@ -242,7 +243,8 @@ against starting cash plus realized P&L. Partial exits release proportional
 collateral, with conservative paise rounding and all remaining collateral returned
 on the final exit. Existing positions retain their saved entry basis, collateral
 and cash balances; new MIS additions reserve 20%, so a mixed legacy/new position
-can have effective leverage below 5x. Version-1 records load without a reset and
+can have effective CASH leverage below 5x. F&O funding is fully reserved as
+described below. Version-1 records load without a reset and
 acquire explicit collateral fields; subsequent mutations persist version 2.
 
 ### Paper order history and historical success rate
@@ -255,8 +257,8 @@ Switch between **Closed trades** and **All fills**, search by symbol, exchange o
 MIS/CNC, and expand any card for its full details. Search filters only the list,
 not the overall score. **Other order activity** lists completed/cancelled/expired/
 rejected instructions separately from executed fills.
-**All fills** lists every BUY/SELL with stock,
-exchange, MIS/CNC product, quantity, actual fill price, entry cost per share, full
+**All fills** lists every BUY/SELL with stock/contract,
+exchange, MIS/CNC/NRML product, quantity, actual fill price, entry cost per unit, full
 order value, realized profit/loss or break-even result, execution reason and IST
 timestamp. An opening BUY or short SELL is an entry, not a break-even result.
 Exit entry-cost prices use the released ledger cost basis, including paise rounding.
@@ -275,16 +277,21 @@ but are not wins. Open positions, pending/cancelled/rejected instructions and li
 unrealized marks do not affect the score. Wins, losses, break-even count and
 completed-trade P&L are shown separately; realized partial exits on still-open
 positions remain outside that completed-trade total. No completed trades means
-the score is unavailable, not zero. All saved stocks and both products since the
-last explicit account reset are included. A reset also clears these statistics.
+the score is unavailable, not zero. The popup includes trades in its page's
+segment; `/risk` includes the shared account. A reset also clears these statistics.
 Existing history needs no data migration or reset.
 
 This is descriptive simulator performance, not a calibrated probability of future
-profit; the ledger still excludes fees and slippage. If saved fills cannot be
+profit. Modeled fills include estimated costs; legacy cost-free history remains
+clearly labeled, with mixed histories identified separately. If saved fills cannot be
 reconciled with current positions/P&L, the UI reports an error instead of showing
 a misleading score or resetting history.
 
 ### Conditional orders and browser-only execution
+
+The paper order-type menu follows the holding period: Intraday (MIS) offers Market
+and Limit; Carry-forward (CNC) also offers GTT. Target + stop-loss exits remain
+available for both. Switching from CNC GTT to MIS resets the order type to Market.
 
 - **Market:** immediate simulated fill at a verified live price.
 - **Limit (day):** BUY only at/below the limit; SELL only at/above it. MIS limits
@@ -300,10 +307,12 @@ a misleading score or resetting history.
   a gap through a stop may fill worse than its stop price.
 - **Attach target + stop-loss to entry:** creates linked protection for the
   resulting whole position after a Market, Limit or GTT entry fills. Entry
-  protection must straddle the entry/limit price. Later quantity changes cancel
-  pending exits for that position; explicitly reapply protection as needed.
+  protection is mandatory for new opening entries and must straddle the
+  entry/limit price and actual execution price. Existing linked protection is
+  retained and resized on additions and partial exits, then cancelled when flat.
+  Oversized separate closing instructions are cancelled rather than reversing a position.
 
-New pending opening orders reserve 20% (MIS) or 100% (CNC) of quantity times limit price, separately
+New pending opening orders reserve 20% (CASH MIS) or 100% (CNC and all F&O) of quantity times limit price plus estimated entry fees, separately
 from position collateral. Cancellation, expiry or rejection releases that reserve;
 fills release it before charging margin for the actual fill notional, returning unused cash.
 A short selling above its limit can require extra collateral and is explicitly
@@ -319,11 +328,103 @@ They are not real broker GTT orders and no background server worker runs after
 the terminal closes. Browser throttling or network outages can delay execution.
 Reconnection checks current observed prices, not missed historical crossings.
 The client evaluates ticks locally and submits a signed-price processing command
-only for a matching trigger, order expiry or MIS square-off; unchanged ticks do
+only for a matching trigger, order expiry, MIS square-off or newly observed daily
+loss halt; unchanged ticks do
 not poll the paper-account API. The server independently rechecks every rule.
 Concurrent tabs use the same revision/idempotency checks, preventing double fills.
+An exclusive browser automation lock also prevents competing tabs from driving
+the same account while the active owner holds it.
 An automatic request failure pauses that tab's automation until the user reviews
 the refreshed account and selects **Resume automatic paper orders**.
+
+### Paper risk safeguards and performance
+
+The authenticated **Risk & Performance** page at `/risk` summarizes account risk,
+protection, costs and completed-trade performance without account polling.
+These safeguards apply to the MongoDB paper portfolio, not real Groww orders or
+the separate legacy order-ticket simulator.
+
+#### Page-aware F&O paper trading
+
+The Paper trading popup on `/` selects CASH stocks; on `/fno` it selects verified
+futures/options contracts. Positions, active orders and history/success scores
+are filtered to the current page's segment. **Both segments share the existing
+INR 1,00,000 balance, daily loss halt and account risk limits**; Account and `/risk`
+show account-wide figures. Reset clears both segments.
+
+F&O supports MIS and NRML, Market/Limit orders and linked target/stop exits, not
+GTT. Futures may be long or short; options may only be bought and sold to close
+owned units. Uncovered option writing and reversal through zero are rejected.
+Quantity is contract units in exact lot-size multiples; prices must respect the
+contract tick. Saved records include exact contract metadata and expiry.
+**All futures entries reserve 100% of notional and option buys reserve 100% of
+premium, plus fees, even for MIS.** This is conservative paper funding, not actual
+broker margin; many futures lots will be unaffordable with the starting balance
+or fail the 20% concentration cap. No extra leverage is implied.
+
+Existing position cost basis, cash, cost history and legacy CASH records are
+preserved. New risk concentration groups CASH and contracts by the same
+underlying, adding gross cash/futures notional and option premium exposure (not
+delta-adjusted exposure). No share-price substitution or second lot multiplication
+is used in contract P&L.
+
+F&O entries recheck closed-candle technical agreement, fresh same-day contract
+quotes and fresh depth on the server. NRML uses completed daily candles.
+CASH-only timing/ORB confluence is not presented as F&O confirmation.
+F&O prices use the contract's FNO feed and segment-bound signed proofs.
+The single browser automation owner streams and processes **both segments** even
+when the popup shows only one; it does not poll the account each second.
+MIS and expiry-day F&O positions are scheduled for observed-price square-off at
+15:20 IST while running. Missed expiry leaves an explicitly visible unresolved
+position: there is no invented settlement price, exercise, assignment or physical
+delivery simulation. No fills are permitted after expiry.
+
+- New entry risk, including estimated entry/stop-exit costs, is capped at **0.5%
+  of equity**. Combined protected open and pending-entry risk is capped at **2%**.
+- Gross exposure in one stock/underlying, including pending entries across products and
+  exchanges, is capped at **20% of equity**, not 20% of leveraged margin.
+- Missing/stale position marks and unprotected legacy exposure block new entries.
+  Attach protection, cancel pending exposure or close positions to resolve them.
+  Exits and protection management do not depend on fresh strategy approval.
+- A **1.5% daily loss budget** uses start-of-IST-day book equity (initial balance
+  plus earlier realized outcomes). Losses are today's negative net fill outcomes
+  plus current unrealized losses, including carried positions. Profits do not
+  replenish that budget; this is deliberately conservative, not close-to-close
+  daily return. An observed halt is persisted for that IST date despite recovery.
+  Reset cannot remove today's halt, and regular-session resets after fills today
+  are rejected. Exits remain available.
+- A sizing suggestion uses the stop, per-entry budget and stock cap; it is not
+  approval. The server independently checks current total exposure.
+
+Every opening fill requires authoritative technical and timing agreement from
+completed regular-session candles, fresh valid five-level depth, spread at most
+0.2% and no opposing order-book pressure. CASH MIS also requires the 30-minute opening
+range breakout and same-slot volume confirmation; CNC is BUY-only and uses
+completed daily candles. Pending Limit/GTT placement is not strategy approval:
+entries are checked again at fill time. Denials reject the entry and release its
+reservation without charging fill fees. Due protective exits and square-offs
+take priority; unrelated entries wait for another tick.
+
+Future portfolio fills use `ESTIMATED_V1`: **0.10% of turnover per fill** as fees,
+rounded up to paise, and **0.05% adverse slippage per side**, rounded in the adverse
+direction to the instrument tick. Limit prices are respected. Entry fees reduce
+cash and net realized P&L immediately; closing fills realize gross P&L less exit
+fees. Basis excludes fees, and completed-cycle P&L includes all entry/exit fees.
+These are illustrative estimates, not Groww's actual tariff or a liquidity model.
+The historical backtest's separate fixed 0.2% round-trip model is unchanged and
+is not directly comparable to this forward paper simulation.
+
+Performance includes net expectancy, average winner/loser, profit factor and
+realized-equity drawdown, plus legacy/modeled cohorts and a limited-sample warning.
+Drawdown follows fill-by-fill realized equity, including entry fees and partial
+exits; it is not an intraday marked-to-market drawdown or out-of-sample validation.
+
+The page and paper popup prominently identify stale/offline and unprotected
+states. Browser-only execution cannot protect positions or observe transient
+loss-budget breaches while closed/disconnected. Stops can gap. Official holiday
+calendars, mandatory sector/news/breadth checks and executed-order-flow evidence
+are not integrated. Real broker execution is unchanged and does not gain native
+protective exits from this work. None of these safeguards guarantees against loss.
 
 Account ownership uses a SHA-256 namespaced identifier derived from Groww's
 server-verified `vendor_user_id`, not the access token or a browser-supplied user
@@ -700,9 +801,19 @@ session cookie or token, when reporting a failure.
 
 ### Futures and options
 
-Choose **Futures / options** in **Market segment**. The **Selected contract**
+Open **Futures & options** in the header to visit the authenticated `/fno` page.
+The main `/` workspace is for CASH stocks; the market-segment dropdown has been
+removed. Both pages retain the shared Groww connection, portfolio bar and account
+controls. Contract analysis, charts, technical/AI setups, cost calculations and
+reviewed F&O order submission live on `/fno`. Its Paper trading popup supports
+futures and bought options using the shared practice account. Use **Stocks** in
+the header to return to the stock workspace.
+
+The **Selected contract**
 field is editable: type at least two underlying or contract characters to show
-a matching-contract dropdown. Filter FUT/CE/PE, expiry and strike in the dropdown,
+a matching-contract dropdown. Exact symbol/underlying matches rank first, followed
+by prefix and substring matches. Searching NIFTY therefore shows NIFTY contracts
+before BANKNIFTY. Filter FUT/CE/PE, expiry and strike in the dropdown,
 then click an exact contract or use arrow keys and Enter; Escape dismisses the
 list. Results show the exchange, type, expiry, strike and lot size, with pagination.
 Editing the query or filters clears the previous selection and analysis; partial
@@ -1039,7 +1150,8 @@ outside this app can still affect sellable inventory; verify existing pending
 orders and broker eligibility yourself. No uncovered option-writing workflow
 is offered.
 
-Paper MARKET fills are simulated at the newly fetched REST quote, without fees,
+The separate legacy order-ticket Paper mode (not the MongoDB paper portfolio)
+simulates MARKET fills at the newly fetched REST quote, without fees,
 slippage, exchange matching or liquidity modelling. Paper LIMIT orders are
 recorded as pending, **never automatically filled**. This is a simple order
 simulation, not a full paper portfolio: no paper holdings ledger, exit inventory,

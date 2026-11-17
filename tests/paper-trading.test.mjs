@@ -59,7 +59,7 @@ test("CNC GTT persists overnight, activates its limit once triggered, and cannot
   assert.throws(() => placePaperOrder(newPaperAccount(), { ...limit, kind: "GTT", triggerPrice: 105, triggerDirection: "UP" }, now), /only for CNC/);
 });
 
-test("target/stop protection exits once at actual gap prices, and a manual quantity change cancels stale protection", () => {
+test("target/stop protection exits once at actual gap prices and resizes after a partial exit", () => {
   const held = fill(newPaperAccount(), "BUY", 10);
   const protectedAccount = protectPaperPosition(held, quote, { targetPrice: 110, stopPrice: 90 }, now);
   assert.equal(process(protectedAccount, 105).fills.length, 1);
@@ -70,8 +70,9 @@ test("target/stop protection exits once at actual gap prices, and a manual quant
   assert.equal(stopped.realized, -15_000);
   assert.equal(process(stopped, 115).fills.length, 2);
   const partial = fill(protectedAccount, "SELL", 1);
-  assert.equal(partial.orders[0].status, "CANCELLED");
-  assert.equal(process(partial, 120).positions[0].quantity, 9);
+  assert.equal(partial.orders[0].status, "PENDING");
+  assert.equal(partial.orders[0].quantity, 9);
+  assert.equal(process(partial, 120).positions.length, 0);
   const short = protectPaperPosition(fill(newPaperAccount(), "SELL", 4), quote, { targetPrice: 90, stopPrice: 110 }, now);
   assert.equal(process(short, 89).realized, 4400);
 });

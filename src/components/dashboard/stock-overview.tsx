@@ -5,7 +5,7 @@ import { CashStockPicker } from "./cash-stock-picker";
 import { FnoContractPicker } from "./fno-contract-picker";
 import type { FnoInstrument } from "../../lib/groww/instrument-schemas";
 
-export function StockOverview({ data, symbol, exchange, mode, segment, contract, loading, onSegmentChange, onSymbolChange, onContractChange, onExchangeChange, onModeChange, onRefresh, onSessionExpired }: {
+export function StockOverview({ data, symbol, exchange, mode, segment, contract, loading, onSymbolChange, onContractChange, onExchangeChange, onModeChange, onRefresh, onSessionExpired }: {
   data: MarketAnalysis | null;
   symbol: string;
   exchange: "NSE" | "BSE";
@@ -13,7 +13,6 @@ export function StockOverview({ data, symbol, exchange, mode, segment, contract,
   segment: MarketSegment;
   contract: FnoInstrument | null;
   onContractChange: (contract: FnoInstrument | null) => void;
-  onSegmentChange: (segment: MarketSegment) => void;
   loading: boolean;
   onSymbolChange: (symbol: string) => void;
   onExchangeChange: (exchange: "NSE" | "BSE") => void;
@@ -23,10 +22,9 @@ export function StockOverview({ data, symbol, exchange, mode, segment, contract,
 }) {
   const quote = data?.quote;
   return (
-    <section className="panel" aria-label="Stock selection and quote">
+    <section className="panel" aria-label={segment === "FNO" ? "Contract selection and quote" : "Stock selection and quote"}>
       <div className="border-b border-line px-4 py-3">
         <div className="flex flex-wrap items-end gap-3">
-          <label className="field-label w-32">Market segment<select aria-label="Market segment" className="field mt-2 w-full" value={segment} onChange={(event) => { if (event.target.value === "CASH" || event.target.value === "FNO") onSegmentChange(event.target.value); }}><option value="CASH">Cash stocks</option><option value="FNO">Futures / options</option></select></label>
           {segment === "CASH" ? <CashStockPicker symbol={symbol} exchange={exchange} onSelect={onSymbolChange} onSessionExpired={onSessionExpired} />
             : <FnoContractPicker key={exchange} exchange={exchange} selected={contract} onSelect={onContractChange} onSessionExpired={onSessionExpired} />}
           <label className="field-label w-24">Exchange<select aria-label="Exchange" className="field mt-2 block w-full" value={exchange} onChange={(event) => { if (event.target.value === "NSE" || event.target.value === "BSE") onExchangeChange(event.target.value); }}><option value="NSE">NSE</option><option value="BSE">BSE</option></select></label>
@@ -37,7 +35,7 @@ export function StockOverview({ data, symbol, exchange, mode, segment, contract,
       </div>
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3">
         <div className="min-w-0">
-          <h2 className="break-words text-xs font-semibold">{data?.symbol || symbol || "Choose a stock"} <span className="font-normal text-muted">· {exchange} · {segment}</span></h2>
+          <h2 className="break-words text-xs font-semibold">{data?.symbol || symbol || (segment === "FNO" ? "Choose a contract" : "Choose a stock")} <span className="font-normal text-muted">· {exchange} · {segment}</span></h2>
           <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
             <p className="font-mono text-3xl font-semibold tracking-tight" aria-label="Latest LTP">{money(quote?.price)}</p>
             <p aria-label="Day change" className={`font-mono text-sm ${quote?.change != null ? quote.change >= 0 ? "text-positive" : "text-negative" : "text-muted"}`}>{quote?.change != null ? `${quote.change >= 0 ? "+" : ""}${decimal(quote.change)} (${quote.changePercent == null ? "--" : `${quote.changePercent >= 0 ? "+" : ""}${decimal(quote.changePercent)}` }%)` : "--"}</p>

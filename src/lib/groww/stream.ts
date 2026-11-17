@@ -120,9 +120,10 @@ export function startGrowwFeed(token: string, selection: FeedInstrument | FeedIn
               const source = message.subscription === undefined
                 ? (instruments.length === 1 ? instrument : undefined) : instruments[message.subscription];
               if (!source) { finish(new GrowwFeedError(502, { stage: "decoding", failureType: "invalid-tick" })); return; }
-              const paperQuoteProof = source.segment === "CASH" && source.instrumentType === "EQ"
+              const paperQuoteProof = source.segment === "CASH" && source.instrumentType === "EQ" ||
+                source.segment === "FNO" && ["FUT", "CE", "PE"].includes(source.instrumentType)
                 ? signExecutionQuote(token, {
-                  symbol: source.symbol, exchange: source.exchange, segment: "CASH",
+                  symbol: source.symbol, exchange: source.exchange, segment: source.segment,
                   price: message.price, tradeTime: message.tradeTime,
                 }) : undefined;
               send({ symbol: source.symbol, exchange: source.exchange, segment: source.segment,

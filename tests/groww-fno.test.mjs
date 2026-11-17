@@ -122,6 +122,29 @@ test("contract pagination returns every matching strike rather than silently tru
   assert.equal(new Set(symbols).size, 65);
 });
 
+test("NIFTY exact-underlying and prefix matches appear before BANKNIFTY substring matches without losing pagination", async t => {
+  const bank = Array.from({ length: 35 }, (_, index) =>
+    call.replaceAll("NIFTY", "BANKNIFTY").replaceAll("25000", String(25000 + index * 50)));
+  const next = call.replaceAll("NIFTY", "NIFTYNEXT50");
+  const fin = call.replaceAll("NIFTY", "FINNIFTY");
+  market(t, [header, ...bank, fin, next, future, call, put].join("\n"));
+  const first = await (await search(get("instruments?q=nifty"))).json();
+  assert.equal(first.total, 40);
+  assert.equal(first.instruments.length, 30);
+  assert.deepEqual(first.instruments.slice(0, 3).map(item => item.underlying), ["NIFTY", "NIFTY", "NIFTY"]);
+  assert.equal(first.instruments[3].underlying, "NIFTYNEXT50");
+  const second = await (await search(get("instruments?q=NIFTY&page=2"))).json();
+  assert.equal(second.instruments.length, 10);
+  assert.equal(second.hasMore, false);
+  assert.equal(new Set([...first.instruments, ...second.instruments].map(item => item.growwSymbol)).size, 40);
+  const filtered = await (await search(get("instruments?q=NIFTY&type=CE&expiry=2099-11-23&strike=25000"))).json();
+  assert.equal(filtered.instruments[0].underlying, "NIFTY");
+  assert.equal(filtered.total, 4);
+  const exact = await (await search(get("instruments?q=BANKNIFTY99NOV25000CE"))).json();
+  assert.equal(exact.total, 1);
+  assert.equal(exact.instruments[0].tradingSymbol, "BANKNIFTY99NOV25000CE");
+});
+
 test("invalid filters and absent sessions reject before downloading the catalog", async (t) => {
   const upstream = market(t);
   for (const query of ["q=N", "q=NIFTY&type=BAD", "q=NIFTY&expiry=2026-02-30", "q=NIFTY&strike=-1", "q=NIFTY&page=0"]) {
