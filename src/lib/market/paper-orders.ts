@@ -3,9 +3,13 @@ import type { PaperOrder, PaperOrderRequest, PaperProtection } from "./paper-ord
 import { fillPaperOrder, freshPaperPrice, paperAccountSchema, paperIntradayCutoff, paperQuoteError, paperRequiredMargin, PaperTradingError, positionKey } from "./paper-trading.ts";
 import type { PaperAccount, PaperInstruction, PaperLivePrice, PaperQuote } from "./paper-trading.ts";
 import { regularMarketSession } from "./market-session.ts";
+import { paperEstimatedFees } from "./paper-costs.ts";
+import { paperRiskReport } from "./paper-risk.ts";
+import { paperContractError, paperPriceKey, paperSegment } from "./paper-instruments.ts";
+import type { FnoInstrument } from "../groww/instrument-schemas.ts";
 
 const cents = (value: number) => Math.round(value * 100);
-const findPosition = (account: PaperAccount, order: Pick<PaperOrder, "symbol" | "exchange" | "product">) =>
+const findPosition = (account: PaperAccount, order: Pick<PaperOrder, "symbol" | "exchange" | "product" | "segment">) =>
   account.positions.find((position) => positionKey(position) === positionKey(order));
 function protectionValid(protection: PaperProtection, long: boolean, reference: number) {
   if (!(long ? protection.stopPrice < reference && reference < protection.targetPrice
@@ -28,7 +32,8 @@ function settle(account: PaperAccount, id: string, status: PaperOrder["status"],
 export function cancelPaperOrder(account: PaperAccount, id: string, now = Date.now()) {
   return settle(account, id, "CANCELLED", now, "Cancelled by user.");
 }
-export function placePaperOrder(account: PaperAccount, input: PaperOrderRequest, now = Date.now(), id = crypto.randomUUID()): PaperAccount {
+export function placePaperOrder(account: PaperAccount, input: PaperOrderRequest, now = Date.now(), id = crypto.randomUUID(),
+  options: { costAware?: boolean; instrument?: FnoInstrument } = {}): PaperAccount {
   const request = paperOrderRequestSchema.parse(input);
   const session = regularMarketSession(now);
   if (request.kind === "GTT" && request.product !== "CNC") throw new PaperTradingError("GTT is available only for CNC delivery. Intraday orders expire at 15:20 IST.");
@@ -36,6 +41,14 @@ export function placePaperOrder(account: PaperAccount, input: PaperOrderRequest,
   if (request.product === "MIS" && now >= paperIntradayCutoff(now)) throw new PaperTradingError("New intraday orders stop at 15:20 IST.");
   const existing = findPosition(account, request);
   const closing = !!existing && Math.sign(existing.quantity) !== (request.side === "BUY" ? 1 : -1);
+  const instrument = options.instrument ?? existing?.instrument;
+  const contractError = paperContractError({ ...request, instrument }, request.quantity, request.side, closing,
+    request.kind === "BRACKET" ? [request.targetPrice, request.stopPrice]
+      : [request.limitPrice, ...(request.protection ? [request.protection.targetPrice, request.protection.stopPrice] : [])], now);
+  if (contractError) throw new PaperTradingError(contractError);
+  if (options.costAware && !closing && request.kind !== "BRACKET" && !request.protection) {
+    throw new PaperTradingError("New pending paper entries require a stop-loss and target.");
+  }
   if (!closing && existing?.product === "MIS" && regularMarketSession(existing.openedAt).date !== session.date) {
     throw new PaperTradingError("Close the overdue intraday position before placing another entry.");
   }
@@ -54,10 +67,13 @@ export function placePaperOrder(account: PaperAccount, input: PaperOrderRequest,
     !(existing.quantity > 0 ? cents(request.stopPrice) < cents(request.targetPrice) : cents(request.targetPrice) < cents(request.stopPrice))) {
     throw new PaperTradingError("Long exits require stop < target; short exits require target < stop.");
   }
-  const reservedCash = closing ? 0 : paperRequiredMargin(request.product, (limitPrice ?? 0) * request.quantity);
+  const notional = (limitPrice ?? 0) * request.quantity;
+  const reservedCash = closing ? 0 : paperRequiredMargin(request.product, notional, paperSegment(request)) +
+    (options.costAware ? paperEstimatedFees(notional) : 0);
   if (!Number.isSafeInteger(reservedCash) || !closing && reservedCash > account.cash) throw new PaperTradingError("Insufficient virtual cash to reserve this pending order.");
   const order: PaperOrder = {
     symbol: request.symbol, exchange: request.exchange, product: request.product, side: request.side, quantity: request.quantity,
+    ...(paperSegment(request) === "FNO" ? { segment: "FNO", instrument } : {}),
     id, kind: request.kind, status: "PENDING", intent: closing ? "CLOSE" : "OPEN", reservedCash, createdAt: now, updatedAt: now,
     ...(request.product === "MIS" ? { expiresAt: paperIntradayCutoff(now) }
       : request.kind === "LIMIT" ? { expiresAt: session.closesAt } : {}),
@@ -68,11 +84,12 @@ export function placePaperOrder(account: PaperAccount, input: PaperOrderRequest,
   };
   return paperAccountSchema.parse({ ...account, cash: account.cash - reservedCash, orders: [...account.orders, order] });
 }
-export function protectPaperPosition(account: PaperAccount, selection: Pick<PaperQuote, "symbol" | "exchange" | "product">,
+export function protectPaperPosition(account: PaperAccount, selection: Pick<PaperQuote, "symbol" | "exchange" | "product" | "segment">,
   protection: PaperProtection, now = Date.now()) {
   const position = findPosition(account, selection);
   if (!position) throw new PaperTradingError("The paper position no longer exists.");
   return placePaperOrder(account, { symbol: selection.symbol, exchange: selection.exchange, product: selection.product,
+    ...(selection.segment === "FNO" ? { segment: "FNO" } : {}),
     kind: "BRACKET", side: position.quantity > 0 ? "SELL" : "BUY",
     quantity: Math.abs(position.quantity), ...protection }, now);
 }
@@ -95,21 +112,26 @@ export function paperOrderPriceReady(order: PaperOrder, price: number) {
 }
 export function paperSquareOffDue(position: PaperAccount["positions"][number], now: number) {
   const session = regularMarketSession(now);
-  return position.product === "MIS" && session.phase === "open" &&
-    (now >= paperIntradayCutoff(now) || regularMarketSession(position.openedAt).date !== session.date);
+  return session.phase === "open" && (position.product === "MIS" &&
+    (now >= paperIntradayCutoff(now) || regularMarketSession(position.openedAt).date !== session.date) ||
+    position.segment === "FNO" && position.instrument!.expiry === session.date && now >= paperIntradayCutoff(now));
 }
-export function processPaperOrders(account: PaperAccount, quote: PaperQuote | null, now = Date.now()): PaperAccount {
+export function processPaperOrders(account: PaperAccount, quote: PaperQuote | null, now = Date.now(), options: {
+  costAware?: boolean; tickSize?: number; deferEntries?: boolean;
+  approveEntry?: (before: PaperAccount, after: PaperAccount, order: PaperOrder, price: number) => void;
+} = {}): PaperAccount {
   let next = expirePaperOrders(account, now);
   if (!quote) return next;
   const quoteError = paperQuoteError(quote, now);
   if (quoteError) throw new PaperTradingError(quoteError);
-  const matching = (item: { symbol: string; exchange: string }) => item.symbol === quote.symbol && item.exchange === quote.exchange;
+  const matching = (item: { symbol: string; exchange: "NSE" | "BSE"; segment?: "CASH" | "FNO" }) => paperPriceKey(item) === paperPriceKey(quote);
   for (const position of [...next.positions]) if (matching(position) && paperSquareOffDue(position, now)) {
-    next = fillPaperOrder(next, { ...quote, product: "MIS" }, position.quantity > 0 ? "SELL" : "BUY", Math.abs(position.quantity), now, crypto.randomUUID(), "SQUARE_OFF");
+    next = fillPaperOrder(next, { ...quote, product: position.product, instrument: position.instrument }, position.quantity > 0 ? "SELL" : "BUY", Math.abs(position.quantity), now, crypto.randomUUID(), "SQUARE_OFF", options);
   }
   for (const original of [...next.orders]) {
     const order = next.orders.find((item) => item.id === original.id)!;
     if (!activePaperOrder(order) || !matching(order)) continue;
+    if (options.deferEntries && order.intent === "OPEN") continue;
     const existing = findPosition(next, order);
     const opposite = !!existing && Math.sign(existing.quantity) !== (order.side === "BUY" ? 1 : -1);
     if (order.intent === "CLOSE" && (!opposite || order.quantity > Math.abs(existing.quantity)) ||
@@ -130,31 +152,41 @@ export function processPaperOrders(account: PaperAccount, quote: PaperQuote | nu
     const released = settle(next, order.id, "FILLED", now,
       `${reason} filled at the verified market price; linked triggers are no longer active.`, cents(quote.price));
     try {
-      next = fillPaperOrder(released, { ...quote, product: order.product }, order.side, order.quantity, now, order.id, reason);
+      const filled = fillPaperOrder(released, { ...quote, product: order.product, instrument: order.instrument }, order.side, order.quantity, now, order.id, reason, {
+        costAware: options.costAware, tickSize: options.tickSize,
+        ...(order.protection ? { protection: {
+          targetPrice: order.protection.targetPrice / 100, stopPrice: order.protection.stopPrice / 100,
+        } } : {}),
+        ...(order.kind !== "BRACKET" ? { limitPrice: order.limitPrice! / 100 } : {}),
+      });
+      if (order.intent === "OPEN") options.approveEntry?.(released, filled, order, filled.fills.at(-1)!.price / 100);
+      next = filled;
     } catch (error) {
       if (!(error instanceof PaperTradingError)) throw error;
       next = paperAccountSchema.parse({ ...released, orders: released.orders.map((item) => item.id === order.id
         ? { ...item, status: "REJECTED", fillPrice: undefined, reason: error.message.slice(0, 250) } : item) });
       continue;
     }
-    if (order.protection) next = protectPaperPosition(next, order, {
-      targetPrice: order.protection.targetPrice / 100, stopPrice: order.protection.stopPrice / 100,
-    }, now);
   }
   return next;
 }
 export function nextPaperProcessing(account: PaperAccount, prices: Record<string, PaperLivePrice>, now: number): PaperInstruction | null {
   const expired = account.orders.find((order) => activePaperOrder(order) && order.expiresAt !== undefined && order.expiresAt <= now);
-  if (expired) return { type: "PROCESS", symbol: expired.symbol, exchange: expired.exchange };
+  if (expired) return { type: "PROCESS", symbol: expired.symbol, exchange: expired.exchange,
+    ...(expired.segment === "FNO" ? { segment: "FNO" } : {}) };
   const instruments = [...account.positions, ...account.orders.filter(activePaperOrder)];
+  const recordHalt = account.riskHaltDate !== regularMarketSession(now).date && paperRiskReport(account, prices, now).dailyLocked;
   for (const item of instruments) {
-    const tick = prices[`${item.exchange}:${item.symbol}`];
+    const tick = prices[paperPriceKey(item)];
     if (!tick?.paperQuoteProof) continue;
-    const quote: PaperQuote = { ...item, segment: "CASH", price: tick.price, tradeTime: tick.tradeTime };
+    const quote: PaperQuote = { ...item, segment: paperSegment(item), price: tick.price, tradeTime: tick.tradeTime };
     if (!freshPaperPrice(tick, now) || paperQuoteError(quote, now)) continue;
-    if (account.positions.some((position) => position.symbol === item.symbol && position.exchange === item.exchange && paperSquareOffDue(position, now)) ||
-      account.orders.some((order) => activePaperOrder(order) && order.symbol === item.symbol && order.exchange === item.exchange && paperOrderPriceReady(order, tick.price))) {
-      return { type: "PROCESS", symbol: item.symbol, exchange: item.exchange, quoteProof: tick.paperQuoteProof };
+    if (recordHalt) return { type: "PROCESS", symbol: item.symbol, exchange: item.exchange, quoteProof: tick.paperQuoteProof,
+      ...(item.segment === "FNO" ? { segment: "FNO" } : {}) };
+    if (account.positions.some((position) => paperPriceKey(position) === paperPriceKey(item) && paperSquareOffDue(position, now)) ||
+      account.orders.some((order) => activePaperOrder(order) && paperPriceKey(order) === paperPriceKey(item) && paperOrderPriceReady(order, tick.price))) {
+      return { type: "PROCESS", symbol: item.symbol, exchange: item.exchange, quoteProof: tick.paperQuoteProof,
+        ...(item.segment === "FNO" ? { segment: "FNO" } : {}) };
     }
   }
   return null;

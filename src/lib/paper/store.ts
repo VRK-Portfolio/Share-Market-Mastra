@@ -56,4 +56,13 @@ export const paperStore = {
     }
     return next;
   },
+  async lockRisk(previous: PaperDocument, date: string) {
+    const next = documentSchema.parse({
+      ...previous, revision: previous.revision + 1, account: { ...previous.account, riskHaltDate: date },
+    });
+    const collection = (await paperDatabase()).collection<PaperDocument>("paper_accounts");
+    const result = await collection.replaceOne({ _id: previous._id, revision: previous.revision }, next, { maxTimeMS: 8000 });
+    if (result.matchedCount !== 1) throw new PaperConflictError("The paper account changed while recording its risk halt. Refresh before continuing.");
+    return next;
+  },
 };

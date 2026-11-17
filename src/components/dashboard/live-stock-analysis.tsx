@@ -19,11 +19,11 @@ type SearchResult =
   | { key: string; data: MarketAnalysis; error?: never }
   | { key: string; error: string; retryAfterSeconds?: number; data?: never };
 
-export function LiveStockAnalysis({ onSessionExpired }: {
+export function LiveStockAnalysis({ onSessionExpired, segment }: {
   onSessionExpired: () => void;
+  segment: MarketSegment;
 }) {
   const [cashSymbol, setSymbol] = useState("");
-  const [segment, setSegment] = useState<MarketSegment>("CASH");
   const [contract, setContract] = useState<FnoInstrument | null>(null);
   const symbol = segment === "CASH" ? cashSymbol : contract?.tradingSymbol ?? "";
   const [exchange, setExchange] = useState<"NSE" | "BSE">("NSE");
@@ -121,7 +121,6 @@ export function LiveStockAnalysis({ onSessionExpired }: {
       <StockOverview
         data={displayData} symbol={symbol} exchange={exchange} mode={mode} loading={loading} segment={segment}
         contract={contract} onContractChange={setContract}
-        onSegmentChange={(value) => { setSegment(value); setContract(null); setMode((current) => current === "MIS" ? "MIS" : value === "FNO" ? "NRML" : "CNC"); setRevision((current) => current + 1); }}
         onSymbolChange={(value) => { setSymbol(value); setRevision((current) => current + 1); }}
         onExchangeChange={(value) => { setExchange(value); setContract(null); setRevision((current) => current + 1); }}
         onModeChange={setMode}

@@ -7,3 +7,5 @@ export function regularMarketSession(now: number) {
     : now < opensAt ? "before-open" : now >= closesAt ? "after-close" : "open";
   return { date, phase, opensAt, closesAt };
 }
+
+export const intradayEntryCutoff = (now: number) => regularMarketSession(now).closesAt - 10 * 60_000;

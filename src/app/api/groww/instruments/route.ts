@@ -1,6 +1,7 @@
 import { requireGrowwSession } from "../../../../lib/groww/client.ts";
 import { currentIstDate, getFnoInstruments, InstrumentCatalogError, searchCashInstruments } from "../../../../lib/groww/instruments.ts";
 import { cashInstrumentSearchSchema, instrumentSearchSchema } from "../../../../lib/groww/instrument-schemas.ts";
+import type { FnoInstrument } from "../../../../lib/groww/instrument-schemas.ts";
 import { sessionResponseHeaders } from "../../../../lib/groww/session.ts";
 
 export const maxDuration = 60;
@@ -57,13 +58,17 @@ export async function GET(request: Request) {
   try {
     const { q, exchange, type, expiry, strike, page } = parsed.data;
     const today = currentIstDate();
+    const relevance = (instrument: FnoInstrument) => {
+      const symbols = [instrument.underlying, instrument.tradingSymbol, instrument.growwSymbol.toUpperCase()];
+      return symbols.some(value => value === q) ? 0 : symbols.some(value => value.startsWith(q)) ? 1 : 2;
+    };
     const matches = (await getFnoInstruments(request.signal)).filter((instrument) =>
       instrument.exchange === exchange && instrument.expiry >= today &&
       (type === "ALL" || instrument.instrumentType === type) &&
       (!expiry || instrument.expiry === expiry) &&
       (strike === undefined || instrument.strikePrice === strike) &&
       [instrument.underlying, instrument.tradingSymbol, instrument.growwSymbol.toUpperCase()].some((value) => value.includes(q)))
-      .sort((a, b) => a.underlying.localeCompare(b.underlying) || a.expiry.localeCompare(b.expiry) ||
+      .sort((a, b) => relevance(a) - relevance(b) || a.underlying.localeCompare(b.underlying) || a.expiry.localeCompare(b.expiry) ||
         a.instrumentType.localeCompare(b.instrumentType) || (a.strikePrice ?? 0) - (b.strikePrice ?? 0));
     const pageSize = 30;
     return Response.json({

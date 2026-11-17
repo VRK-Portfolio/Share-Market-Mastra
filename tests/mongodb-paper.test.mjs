@@ -8,8 +8,9 @@ import { closePaperDatabase } from "../src/lib/paper/database.ts";
 import { paperAccountIdentity } from "../src/lib/paper/identity.ts";
 import { commandAlreadyApplied, paperStore } from "../src/lib/paper/store.ts";
 import { signExecutionQuote } from "../src/lib/paper/execution-quote.ts";
-import { fillPaperOrder, newPaperAccount, paperSnapshotSchema } from "../src/lib/market/paper-trading.ts";
+import { fillPaperOrder, newPaperAccount, paperSnapshotSchema, PaperTradingError } from "../src/lib/market/paper-trading.ts";
 import { paperTradeHistory } from "../src/lib/market/paper-history.ts";
+import { paperSignalChecks } from "../src/lib/paper/strict-signals.ts";
 
 const originalEnv = Object.fromEntries(["MONGODB_URI", "MONGODB_DB", "GROWW_SESSION_SECRET"].map((key) => [key, process.env[key]]));
 let documents;
@@ -24,6 +25,7 @@ beforeEach((t) => {
   process.env.GROWW_SESSION_SECRET = randomBytes(32).toString("hex");
   t.mock.method(Date, "now", () => now);
   t.mock.method(console, "error", () => {});
+  t.mock.method(paperSignalChecks, "approve", async () => {});
   t.mock.method(MongoClient.prototype, "connect", async function () { return this; });
   t.mock.method(Collection.prototype, "updateOne", async function (filter, update) {
     if (!documents.has(filter._id)) documents.set(filter._id, structuredClone({ _id: filter._id, ...update.$setOnInsert }));
@@ -55,6 +57,8 @@ const hashOwner = (id) => createHash("sha256").update(`groww-paper:v1:${id}`).di
 const csv = [
   "exchange,trading_symbol,groww_symbol,underlying_symbol,instrument_type,expiry_date,strike_price,lot_size,tick_size,segment",
   "NSE,ADANIPORTS,NSE-ADANIPORTS,,EQ,,,1,0.01,CASH",
+  "NSE,TEST99NOVFUT,NSE-TEST-23Nov99-FUT,TEST,FUT,2099-11-23,,10,0.05,FNO",
+  "NSE,TEST99NOV100CE,NSE-TEST-23Nov99-100-CE,TEST,CE,2099-11-23,100,10,0.05,FNO",
 ].join("\n");
 function market(t, settings = {}) {
   return t.mock.method(globalThis, "fetch", async (input, init) => {
@@ -68,7 +72,7 @@ function market(t, settings = {}) {
     }
     if (url.pathname === "/v1/live-data/quote") {
       assert.equal(init.method, "GET");
-      assert.equal(url.searchParams.get("segment"), "CASH");
+      assert.equal(url.searchParams.get("segment"), settings.segment ?? "CASH");
       return Response.json({ status: "SUCCESS", payload: {
         last_price: settings.price ?? 100, day_change: 0, day_change_perc: 0,
         ohlc: { open: 100, high: 200, low: 90, close: 100 }, volume: 1000,
@@ -79,9 +83,15 @@ function market(t, settings = {}) {
   });
 }
 function trade(snapshot, changes = {}) {
+  const side = changes.side ?? "BUY";
+  const product = changes.product ?? "MIS";
+  const existing = snapshot.account.positions.find(position => position.symbol === (changes.symbol ?? "ADANIPORTS") &&
+    position.product === product && position.exchange === (changes.exchange ?? "NSE"));
+  const closing = existing && Math.sign(existing.quantity) !== (side === "BUY" ? 1 : -1);
   return {
     type: "TRADE", accountId: snapshot.accountId, expectedRevision: snapshot.revision,
     operationId: randomUUID(), symbol: "ADANIPORTS", exchange: "NSE", product: "MIS", side: "BUY", quantity: 10,
+    ...(!closing ? { protection: side === "BUY" ? { targetPrice: 200, stopPrice: 99 } : { targetPrice: 50, stopPrice: 110 } } : {}),
     ...changes,
   };
 }
@@ -90,6 +100,110 @@ async function load(accessToken = token) {
   assert.equal(response.status, 200);
   return paperSnapshotSchema.parse(await response.json());
 }
+
+test("mandatory protection, strict approval and risk caps are enforced on the server without accepting client approval", async t => {
+  market(t);
+  const initial = await load();
+  const missing = await POST(request(trade(initial, { protection: undefined })));
+  assert.equal(missing.status, 400);
+  assert.match((await missing.json()).error, /require a stop/);
+  const oversized = await POST(request(trade(initial, { quantity: 300 })));
+  assert.equal(oversized.status, 400);
+  assert.match((await oversized.json()).error, /20%/);
+  const wide = await POST(request(trade(initial, { quantity: 100, protection: { targetPrice: 200, stopPrice: 90 } })));
+  assert.equal(wide.status, 400);
+  assert.match((await wide.json()).error, /0.5%/);
+  t.mock.method(paperSignalChecks, "approve", async () => { throw new PaperTradingError("Strict depth is unavailable."); });
+  const denied = await POST(request(trade(initial)));
+  assert.equal(denied.status, 400);
+  assert.match((await denied.json()).error, /Strict depth/);
+  assert.equal((await POST(request(trade(initial, { approved: true })))).status, 400);
+  const unchanged = await load();
+  assert.equal(unchanged.revision, 0);
+  assert.equal(unchanged.account.fills.length, 0);
+});
+
+test("pending entries are approved again at fill time and rejected entries release all reservations without fees", async t => {
+  market(t);
+  const initial = await load();
+  const placedResponse = await POST(request({
+    type: "PLACE", accountId: initial.accountId, expectedRevision: 0, operationId: randomUUID(),
+    order: { symbol: "ADANIPORTS", exchange: "NSE", product: "MIS", side: "BUY", quantity: 10, kind: "LIMIT",
+      limitPrice: 100, protection: { targetPrice: 110, stopPrice: 99 } },
+  }));
+  assert.equal(placedResponse.status, 200);
+  const placed = await placedResponse.json();
+  t.mock.method(paperSignalChecks, "approve", async () => { throw new PaperTradingError("Strict entry no longer agrees."); });
+  const processed = await POST(request({
+    type: "PROCESS", accountId: placed.accountId, expectedRevision: placed.revision, operationId: randomUUID(),
+    symbol: "ADANIPORTS", exchange: "NSE", quoteProof: signExecutionQuote(token, {
+      symbol: "ADANIPORTS", exchange: "NSE", segment: "CASH", price: 100, tradeTime: now,
+    }),
+  }));
+  assert.equal(processed.status, 200);
+  const result = await processed.json();
+  assert.equal(result.account.orders[0].status, "REJECTED");
+  assert.match(result.account.orders[0].reason, /Strict entry/);
+  assert.equal(result.account.cash, result.account.initialBalance);
+  assert.equal(result.account.fills.length, 0);
+});
+
+test("protective exits run before unrelated entry approval and never depend on entry strategy availability", async t => {
+  const settings = { price: 100 };
+  market(t, settings);
+  const initial = await load();
+  const entered = await (await POST(request(trade(initial, { protection: { targetPrice: 110, stopPrice: 99 } })))).json();
+  const queued = await (await POST(request({
+    type: "PLACE", accountId: entered.accountId, expectedRevision: entered.revision, operationId: randomUUID(),
+    order: { symbol: "ADANIPORTS", exchange: "NSE", product: "MIS", side: "BUY", quantity: 10, kind: "LIMIT",
+      limitPrice: 120, protection: { targetPrice: 130, stopPrice: 119 } },
+  }))).json();
+  const approval = t.mock.method(paperSignalChecks, "approve", async () => { throw new Error("Must not delay a protective exit"); });
+  settings.price = 110;
+  const response = await POST(request({
+    type: "PROCESS", accountId: queued.accountId, expectedRevision: queued.revision, operationId: randomUUID(),
+    symbol: "ADANIPORTS", exchange: "NSE", quoteProof: signExecutionQuote(token, {
+      symbol: "ADANIPORTS", exchange: "NSE", segment: "CASH", price: 110, tradeTime: now,
+    }),
+  }));
+  assert.equal(response.status, 200);
+  const next = await response.json();
+  assert.equal(next.account.positions.length, 0);
+  assert.equal(next.account.fills.at(-1).reason, "TARGET");
+  assert.equal(next.account.orders.find(order => order.kind === "LIMIT").status, "PENDING");
+  assert.equal(approval.mock.callCount(), 0);
+});
+
+test("an observed daily loss halt persists through price recovery, permits exits and cannot be reset away", async t => {
+  const settings = { price: 98 };
+  market(t, settings);
+  const initial = await load();
+  documents.get(initial.accountId).account = fillPaperOrder(initial.account, {
+    symbol: "ADANIPORTS", exchange: "NSE", segment: "CASH", product: "MIS", price: 100, tradeTime: now,
+  }, "BUY", 1000, now, randomUUID(), "MARKET", { protection: { targetPrice: 200, stopPrice: 1 } });
+  const response = await POST(request({
+    type: "PROCESS", accountId: initial.accountId, expectedRevision: 0, operationId: randomUUID(),
+    symbol: "ADANIPORTS", exchange: "NSE", quoteProof: signExecutionQuote(token, {
+      symbol: "ADANIPORTS", exchange: "NSE", segment: "CASH", price: 98, tradeTime: now,
+    }),
+  }));
+  assert.equal(response.status, 200);
+  const halted = await response.json();
+  assert.equal(halted.account.riskHaltDate, "2026-11-17");
+  settings.price = 100;
+  const blocked = await POST(request(trade(halted, { quantity: 1 })));
+  assert.equal(blocked.status, 400);
+  assert.match((await blocked.json()).error, /Daily paper loss limit/);
+  const exit = await POST(request(trade(halted, { side: "SELL", quantity: 1000 })));
+  assert.equal(exit.status, 200);
+  const closed = await exit.json();
+  assert.equal(closed.account.positions.length, 0);
+  assert.equal((await POST(request({
+    type: "RESET", confirmed: true, accountId: closed.accountId, expectedRevision: closed.revision, operationId: randomUUID(),
+  }))).status, 400);
+  now += 86_400_000;
+  assert.equal((await POST(request(trade(closed)))).status, 200);
+});
 
 test("database accounts are private per verified stable user, survive new tokens and never derive ownership from client parameters", async (t) => {
   const settings = { owner: "owner-a" };
@@ -118,25 +232,25 @@ test("server fetches execution prices and persists fills, basis and realized cas
   const response = await POST(request(buy));
   assert.equal(response.status, 200);
   const filled = await response.json();
-  assert.equal(filled.account.cash, 9_975_000);
-  assert.equal(filled.account.positions[0].margin, 25_000);
+  assert.equal(filled.account.cash, 9_974_860);
+  assert.equal(filled.account.positions[0].margin, 25_014);
   assert.equal(paperTradeHistory(filled.account).successRate, null);
-  assert.equal(filled.account.fills[0].price, 12_500);
+  assert.equal(filled.account.fills[0].price, 12_507);
   assert.equal(filled.account.fills[0].id, buy.operationId);
   settings.price = 130;
   const exit = await POST(request(trade(filled, { side: "SELL" })));
   assert.equal(exit.status, 200);
   const closed = await load();
   assert.deepEqual(closed.account.positions, []);
-  assert.equal(closed.account.realized, 5000);
-  assert.equal(closed.account.cash, 10_005_000);
+  assert.equal(closed.account.realized, 4604);
+  assert.equal(closed.account.cash, 10_004_604);
   assert.equal(closed.revision, 2);
   const history = paperTradeHistory(closed.account);
   assert.equal(history.successRate, 100);
   assert.equal(history.completed[0].quantity, 10);
-  assert.equal(history.completed[0].entryValue, 125_000);
-  assert.equal(history.completed[0].exitValue, 130_000);
-  assert.equal(history.rows[1].entryPrice, 12_500);
+  assert.equal(history.completed[0].entryValue, 125_070);
+  assert.equal(history.completed[0].exitValue, 129_930);
+  assert.equal(history.rows[1].entryPrice, 12_507);
   assert.ok(upstream.mock.calls.every((call) => !String(call.arguments[0]).includes("/order/")));
 });
 
@@ -150,7 +264,7 @@ test("pending-order reservations and signed automatic fills are atomic and idemp
   }));
   assert.equal(placedResponse.status, 200);
   const placed = await placedResponse.json();
-  assert.equal(placed.account.cash, 9_980_000);
+  assert.equal(placed.account.cash, 9_979_900);
   const command = {
     type: "PROCESS", accountId: initial.accountId, expectedRevision: placed.revision, operationId: randomUUID(),
     symbol: "ADANIPORTS", exchange: "NSE", quoteProof: signExecutionQuote(token, {
@@ -162,7 +276,7 @@ test("pending-order reservations and signed automatic fills are atomic and idemp
   const filled = await load();
   assert.equal(filled.account.fills.length, 1);
   assert.equal(filled.account.orders.filter((item) => item.kind === "BRACKET").length, 1);
-  assert.equal(filled.account.cash, 9_980_200);
+  assert.equal(filled.account.cash, 9_980_090);
   assert.equal((await POST(request(command))).status, 200);
 });
 
@@ -172,7 +286,7 @@ test("cancellation releases only the owner's reservation, and market fills can a
   const placed = await (await POST(request({
     type: "PLACE", accountId: initial.accountId, expectedRevision: 0, operationId: randomUUID(),
     order: { symbol: "ADANIPORTS", exchange: "NSE", product: "CNC", side: "BUY", quantity: 10, kind: "GTT",
-      limitPrice: 100, triggerPrice: 105, triggerDirection: "UP" },
+      limitPrice: 100, triggerPrice: 105, triggerDirection: "UP", protection: { targetPrice: 110, stopPrice: 90 } },
   }))).json();
   assert.equal((await POST(request({
     type: "CANCEL", accountId: placed.accountId, expectedRevision: placed.revision, operationId: randomUUID(),
@@ -188,18 +302,20 @@ test("cancellation releases only the owner's reservation, and market fills can a
 test("duplicate operations are idempotent and concurrent competing revisions cannot double-spend", async (t) => {
   market(t);
   const initial = await load();
-  const command = trade(initial, { quantity: 5000 });
+  const command = trade(initial, { quantity: 100 });
   const duplicate = await Promise.all([POST(request(command)), POST(request(command))]);
   assert.deepEqual(duplicate.map((response) => response.status), [200, 200]);
   const filled = await load();
-  assert.equal(filled.account.cash, 0);
+  assert.equal(filled.account.cash, 9_798_899);
   assert.equal(filled.account.fills.length, 1);
   const reused = await POST(request({ ...command, quantity: 1 }));
   assert.equal(reused.status, 409);
   const reset = { type: "RESET", confirmed: true, accountId: filled.accountId, expectedRevision: 1, operationId: randomUUID() };
+  now = Date.parse("2026-11-17T16:00:00+05:30");
   assert.equal((await POST(request(reset))).status, 200);
   const clean = await load();
-  const race = await Promise.all([POST(request(trade(clean, { quantity: 5000 }))), POST(request(trade(clean, { quantity: 5000 })))]);
+  now = Date.parse("2026-11-18T10:30:00+05:30");
+  const race = await Promise.all([POST(request(trade(clean, { quantity: 100 }))), POST(request(trade(clean, { quantity: 100 })))]);
   assert.deepEqual(race.map((response) => response.status).sort(), [200, 409]);
   assert.equal((await load()).account.fills.length, 1);
 });
@@ -210,6 +326,7 @@ test("reset is per-user and retains operation receipts; old revision cannot resu
   const command = trade(initial);
   const filled = await (await POST(request(command))).json();
   const reset = { type: "RESET", confirmed: true, accountId: filled.accountId, expectedRevision: filled.revision, operationId: randomUUID() };
+  now = Date.parse("2026-11-17T16:00:00+05:30");
   assert.equal((await POST(request(reset))).status, 200);
   assert.equal((await POST(request(reset))).status, 200);
   assert.equal((await POST(request(command))).status, 200);
@@ -219,7 +336,7 @@ test("reset is per-user and retains operation receipts; old revision cannot resu
   assert.equal((await POST(request(trade(initial)))).status, 409);
 });
 
-test("missing/tampered authentication, cross-origin requests, client prices, balances and FNO are rejected before writes", async (t) => {
+test("missing/tampered authentication, cross-origin requests, client prices, balances and invalid products are rejected before writes", async (t) => {
   const upstream = market(t);
   assert.equal((await GET(request(null, null))).status, 401);
   assert.equal((await POST(request({ type: "RESET" }, token, { origin: "https://other.example" }))).status, 403);
@@ -229,6 +346,78 @@ test("missing/tampered authentication, cross-origin requests, client prices, bal
   }
   assert.equal((await load()).revision, 0);
   assert.equal(upstream.mock.calls.filter((call) => new URL(call.arguments[0]).pathname === "/v1/live-data/quote").length, 0);
+});
+
+test("F&O paper API uses verified contract metadata, full funding and shared cash without broker submission", async t => {
+  const upstream = market(t, { segment: "FNO" });
+  const initial = await load();
+  const command = trade(initial, { segment: "FNO", symbol: "TEST99NOVFUT", product: "NRML",
+    quantity: 10, protection: { targetPrice: 110, stopPrice: 99 } });
+  const response = await POST(request(command));
+  assert.equal(response.status, 200);
+  const opened = await response.json();
+  const position = opened.account.positions[0];
+  assert.equal(position.instrument.lotSize, 10);
+  assert.equal(position.instrument.instrumentType, "FUT");
+  assert.equal(position.margin, 100050);
+  assert.equal(position.margin, position.basis);
+  assert.equal(opened.account.cash, 9_899_849);
+  assert.equal((await POST(request(command))).status, 200);
+  assert.equal((await load()).account.fills.length, 1);
+  const close = trade(opened, { segment: "FNO", symbol: "TEST99NOVFUT", product: "NRML", side: "SELL", quantity: 10 });
+  const closed = await POST(request(close));
+  assert.equal(closed.status, 200);
+  assert.equal((await closed.json()).account.positions.length, 0);
+  assert.ok(upstream.mock.calls.filter(call => new URL(call.arguments[0]).pathname.includes("quote"))
+    .every(call => new URL(call.arguments[0]).searchParams.get("segment") === "FNO"));
+});
+
+test("F&O rejects fractional lots, wrong ticks, option writing, edited metadata and cross-segment signed prices atomically", async t => {
+  market(t, { segment: "FNO" });
+  const initial = await load();
+  const base = { segment: "FNO", symbol: "TEST99NOV100CE", product: "MIS", quantity: 10,
+    protection: { targetPrice: 110, stopPrice: 99 } };
+  for (const changes of [{ quantity: 1 }, { side: "SELL" }, { protection: { targetPrice: 110.01, stopPrice: 99 } },
+    { instrument: { lotSize: 1 } }, { quoteProof: signExecutionQuote(token, {
+      symbol: base.symbol, exchange: "NSE", segment: "CASH", price: 100, tradeTime: now,
+    }) }]) {
+    assert.equal((await POST(request(trade(initial, { ...base, ...changes })))).status, 400);
+  }
+  assert.equal((await load()).revision, 0);
+  const response = await POST(request(trade(initial, { ...base, quoteProof: signExecutionQuote(token, {
+    symbol: base.symbol, exchange: "NSE", segment: "FNO", price: 100, tradeTime: now,
+  }) })));
+  assert.equal(response.status, 200);
+  const opened = await response.json();
+  const sell = await POST(request(trade(opened, { ...base, side: "SELL", protection: undefined })));
+  assert.equal(sell.status, 200);
+  assert.equal((await sell.json()).account.positions.length, 0);
+});
+
+test("F&O pending limits and target exits process signed contract ticks against the same persisted account", async t => {
+  market(t, { segment: "FNO" });
+  let state = await load();
+  const identity = { symbol: "TEST99NOV100CE", exchange: "NSE", segment: "FNO" };
+  const placed = await POST(request({ type: "PLACE", accountId: state.accountId, expectedRevision: state.revision,
+    operationId: randomUUID(), order: { ...identity, product: "NRML", side: "BUY", quantity: 10,
+      kind: "LIMIT", limitPrice: 100, protection: { targetPrice: 110, stopPrice: 99 } } }));
+  assert.equal(placed.status, 200);
+  state = await placed.json();
+  assert.equal(state.account.orders[0].reservedCash, 100100);
+  for (const price of [100, 110]) {
+    const processed = await POST(request({ type: "PROCESS", ...identity, accountId: state.accountId,
+      expectedRevision: state.revision, operationId: randomUUID(), quoteProof: signExecutionQuote(token, {
+        ...identity, price, tradeTime: now,
+      }) }));
+    assert.equal(processed.status, 200);
+    state = await processed.json();
+  }
+  assert.equal(state.account.positions.length, 0);
+  assert.equal(state.account.fills[0].reason, "LIMIT");
+  assert.equal(state.account.fills[0].price, 10000);
+  assert.equal(state.account.fills[1].reason, "TARGET");
+  assert.equal(state.account.fills[1].segment, "FNO");
+  assert.equal(state.account.cash, state.account.initialBalance + state.account.realized);
 });
 
 test("stale server quotes and insufficient funds cannot mutate MongoDB balances", async (t) => {
@@ -252,9 +441,9 @@ test("a server-signed live price fills despite stale REST data and remains idemp
   const response = await POST(request(command));
   assert.equal(response.status, 200);
   const filled = await response.json();
-  assert.equal(filled.account.fills[0].price, 12_500);
+  assert.equal(filled.account.fills[0].price, 12_507);
   assert.equal(filled.account.fills[0].quoteTime, now);
-  assert.equal(filled.account.cash, 9_975_000);
+  assert.equal(filled.account.cash, 9_974_860);
   assert.equal(upstream.mock.calls.filter((call) => new URL(call.arguments[0]).pathname === "/v1/live-data/quote").length, 0);
   now += 60_001;
   assert.equal((await POST(request(command))).status, 200);
@@ -267,7 +456,7 @@ test("stored version-1 positions retain collateral and cash until new leveraged 
   const initial = await load();
   const legacy = fillPaperOrder(initial.account, {
     symbol: "ADANIPORTS", exchange: "NSE", segment: "CASH", product: "MIS", price: 100, tradeTime: now,
-  }, "BUY", 10, now);
+  }, "BUY", 10, now, randomUUID(), "MARKET", { protection: { targetPrice: 200, stopPrice: 90 } });
   legacy.version = 1;
   legacy.cash = 9_900_000;
   delete legacy.positions[0].margin;
@@ -278,14 +467,14 @@ test("stored version-1 positions retain collateral and cash until new leveraged 
   const response = await POST(request(trade(loaded)));
   assert.equal(response.status, 200);
   const added = await response.json();
-  assert.equal(added.account.cash, 9_880_000);
-  assert.equal(added.account.positions[0].basis, 200_000);
-  assert.equal(added.account.positions[0].margin, 120_000);
+  assert.equal(added.account.cash, 9_879_889);
+  assert.equal(added.account.positions[0].basis, 200_050);
+  assert.equal(added.account.positions[0].margin, 120_010);
   assert.equal(documents.get(initial.accountId).account.version, 2);
   settings.price = 110;
   const closed = await (await POST(request(trade(added, { side: "SELL", quantity: 20 })))).json();
-  assert.equal(closed.account.cash, 10_020_000);
-  assert.equal(closed.account.realized, 20_000);
+  assert.equal(closed.account.cash, 10_019_509);
+  assert.equal(closed.account.realized, 19_509);
 });
 
 test("live proofs reject edited prices, another token/instrument, stale or future trades without modifying the account", async (t) => {
@@ -347,7 +536,7 @@ test("store compare-and-swap filters, persisted data validation and duplicate-cr
   const owner = hashOwner("store-owner");
   const loaded = await paperStore.load(owner);
   assert.equal(loaded.revision, 0);
-  const cmd = trade({ accountId: owner, revision: 0 });
+  const cmd = trade({ accountId: owner, revision: 0, account: loaded.account });
   const account = fillPaperOrder(loaded.account, {
     symbol: "ADANIPORTS", exchange: "NSE", segment: "CASH", product: "MIS", price: 100, tradeTime: now,
   }, "BUY", 10, now, cmd.operationId);

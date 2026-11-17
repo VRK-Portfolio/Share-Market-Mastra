@@ -1,4 +1,4 @@
-import { regularMarketSession } from "./market-session.ts";
+import { intradayEntryCutoff, regularMarketSession } from "./market-session.ts";
 import type { TechnicalVerdict } from "./technical-verdict.ts";
 import type { MarketAnalysis } from "./types.ts";
 
@@ -17,6 +17,9 @@ export function calculateEntryTiming(analysis: MarketAnalysis, verdict: Technica
       : session.phase === "before-open"
         ? "Before 09:15 IST. Wait for regular trading and a fresh quote; opening gaps can invalidate a setup."
         : "At or after 15:30 IST. Review the close and recheck during a later trading session.");
+  }
+  if (verdict.mode === "MIS" && now >= intradayEntryCutoff(now)) {
+    reasons.push("New intraday entries stop at 15:20 IST, ten minutes before the regular close.");
   }
   if (verdict.mode === "CNC" && analysis.interval !== "1day") {
     reasons.push("Select 1D candles to assess the daily trend for carry-forward BUY timing.");
