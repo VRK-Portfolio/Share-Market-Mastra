@@ -7,10 +7,12 @@ quotes and historical charts, inspired by the
 
 ```sh
 npm ci
+npm run setup:terminal-login
 npm run dev
 ```
 
-Open http://localhost:3000. Connect Groww with a generated access token to load your
+Open http://localhost:3000 and sign in with the administrator credentials set
+above. Connect Groww with a generated access token to load your
 portfolio and search actual stock data. A server-side session secret and the
 appropriate Groww Trading API / market-data permissions are required.
 
@@ -38,15 +40,20 @@ schema export such as `cashInstrumentSearchSchema.safeParse`, restart
 
 ## Features
 
+- Private administrator login before the terminal or data APIs can be accessed,
+  with MongoDB-backed revocable sessions and persistent login throttling.
 - Responsive Tailwind CSS layout with persistent light/dark themes.
 - Debounced stock-name/symbol dropdown search for NSE/BSE CASH stocks.
 - Actual Groww quotes and 15m/1h/1D historical candles, with volume, hover OHLC
   and overlay toggles.
 - MIS/CNC display presets for technical indicator cards.
-- Today's gainers and losers among tracked NSE stocks, with click-to-analyze.
+- On-request company-headline sentiment from GNews, classified with Gemini and
+  combined with the price-action confluence verdict using a fresh opposing-news veto.
 - Button-triggered Mastra / Google Gemini technical recommendations, target and
   stop-loss scenarios, per-indicator evidence, support/resistance and advisory delivery GTT triggers.
 - Reviewed PAPER or LIVE Groww DAY orders for CASH and F&O, with explicit confirmation.
+- Separate MongoDB-backed INR 1,00,000 paper account per verified Groww user with manual CASH fills,
+  MIS long/short positions, CNC holdings, realized/unrealized P&L and trade history.
 - Groww connection to view real holdings and positions, with manual
   refresh and an all/CASH/FNO positions filter.
 - `technicalindicators` calculates VWAP, RSI, ATR, EMAs and MACD from returned
@@ -58,6 +65,303 @@ fetched on search, interval/exchange changes and manual refresh. Selected F&O
 contracts also refresh snapshots automatically about every 30 seconds by default.
 Prices may reflect
 the last trading session when markets are closed. This is not investment advice.
+
+## Private terminal login
+
+Run `npm run setup:terminal-login` locally. It prompts for an administrator
+username and a hidden password, then updates only these values in the ignored
+`.env`:
+
+```dotenv
+TERMINAL_ADMIN_USERNAME=<administrator username>
+TERMINAL_ADMIN_PASSWORD_HASH=<generated salted scrypt hash>
+TERMINAL_SESSION_SECRET=<generated random secret>
+```
+
+The password is not saved in plaintext. Prefer at least 12 unique characters;
+the setup accepts a minimum of five characters, but short passwords remain
+unsafe even with hashing and throttling. Do not pass passwords as command-line
+arguments, commit the configuration or use `NEXT_PUBLIC_*` variables. Configure
+`MONGODB_URI` and `MONGODB_DB` as described below; MongoDB is required for login,
+not only paper trading. Its database user needs permission to create the
+authentication collections and TTL indexes.
+
+Copy these three administrator settings and MongoDB settings into the server
+environment on Render/Vercel (or `.env.production` for Docker), then restart or
+redeploy. Use HTTPS in production; production cookies are Secure, HttpOnly and
+SameSite=Strict. Running setup again rotates the hash and secret and invalidates
+existing administrator sessions. All instances must share the same settings.
+There is no public registration or password-reset endpoint: rerun setup locally
+and redeploy the new settings to change/recover administrator access.
+
+Unauthenticated page requests redirect to `/login`; data APIs return 401 before
+reaching Groww, trading or paper-account handlers. Only the login/logout endpoints,
+login page and framework/static assets are public. The root page independently
+verifies authentication before rendering the terminal. It waits for a live request
+with Next.js `connection()` before checking time-dependent session expiry, keeping
+that check out of prerendering and runtime prefetches. Terminal responses are
+not publicly cached. A valid Groww cookie alone cannot unlock the terminal.
+
+Successful login creates a random opaque, eight-hour cookie; MongoDB stores only
+its SHA-256 token hash, expiry and a credential-version marker. Expired sessions
+are rejected immediately, independently of TTL cleanup. **Sign out** revokes the
+server record and clears both the terminal and Groww cookies. Logging in also
+clears any previous Groww connection so broker access must be explicitly connected
+again. The terminal checks session validity on focus and every 30 seconds; APIs
+enforce it on every request.
+
+Login allows at most **five attempts per fixed 15-minute window**, shared across
+instances and callers for this private administrator (including successful
+attempts). Excess requests return 429 with Retry-After. A wrong username and
+wrong password produce the same error. Limits are intentionally global rather
+than trusting client-controlled forwarding headers; repeated requests can
+temporarily lock out the administrator, so use an upstream firewall for public
+exposure. Authentication configuration or database failure denies access with an
+explicit error rather than disabling login protection.
+
+Authentication uses `terminal_sessions` and `terminal_login_attempts` collections
+in the configured application database, separate from paper ledgers. Existing
+Groww connection, trading eligibility and per-Groww-user paper-account rules remain
+unchanged after administrator login. For external health probes, use the public
+`/login` page; `/` is now protected.
+
+## Company news sentiment
+
+Set `GNEWS_API_KEY` and `GOOGLE_GENERATIVE_AI_API_KEY` (or `GOOGLE_API_KEY`) in the
+server environment, then restart/redeploy. Do not put keys in `NEXT_PUBLIC_*`
+variables or the browser. Obtain a GNews plan/licence appropriate for your use:
+[GNews search API](https://docs.gnews.io/endpoints/search-endpoint).
+GNews Free currently delays articles by 12 hours; paid real-time access is
+necessary for this feature's six-hour intraday recency gate.
+
+Select a CASH equity, expand **Company news sentiment** inside **Price action &
+confluence**, and click **Fetch / refresh news sentiment**. The authenticated,
+same-origin `POST /api/groww/sentiment` endpoint verifies the stock's company name
+against the Groww catalogue before searching English headlines from India-based
+sources over the last 72 hours. Only valid dated, deduplicated headlines are
+considered, capped at eight from the provider's ten newest matches. This is
+limited coverage, not an exhaustive news scan or social-media sentiment.
+
+A registered Mastra agent classifies each supplied headline's company relevance
+and positive/negative/neutral tone. Only public stock identity and headline
+metadata are sent to Gemini, not credentials, holdings, orders, prices or article
+contents. Code validates the returned IDs, preserves original dated source links,
+and computes the balance; model-generated sources or aggregate directions are
+not trusted. Two relevant headlines are required; a positive-minus-negative
+balance of at least +25% / at most -25% gives BULLISH / BEARISH, otherwise NEUTRAL.
+This is a heuristic headline balance, not a success probability.
+
+For intraday confluence, the receipt must be at most 15 minutes old and at least
+one relevant headline must have been published within six hours. Fresh opposing
+sentiment blocks an otherwise eligible setup with WAIT. Aligned or neutral news
+cannot create a setup, bypass structural/volume checks or change existing trend,
+timing, paper-trading or real-order rules. Requested sentiment holds WAIT while
+loading. Missing, stale, thin or failed coverage is explicitly unavailable and
+the existing missing-context conditional behavior remains in effect.
+
+No automatic news/model polling occurs, including after a market-data refresh.
+Quota, configuration and classification failures are displayed without using
+stale results as fresh confirmation. News may already be priced in; syndicated
+reports are correlated, and a headline alone is not a verified fact or full-article
+analysis. No sentiment-strategy success rate has been measured.
+
+## MongoDB paper accounts
+
+Set these **server-only** environment variables (never `NEXT_PUBLIC_*`):
+
+```dotenv
+MONGODB_URI=<your MongoDB connection string>
+MONGODB_DB=stock_terminal_paper
+```
+
+Use an Atlas database user restricted to this application database and allow
+your application's outbound network access. Keep credentials out of Git and
+rotate any credential exposed in chat or logs. For local setup, save the variables
+in the ignored `.env`, then run `npm run setup:paper-db`. This creates the
+`paper_accounts` collection in the requested database, pings it and leaves user
+records empty. The runtime can also create the collection on first account access.
+On Render/Vercel, configure the same variables in the deployment's environment
+and redeploy; no database URL is sent to browsers. MongoDB errors do not fall back
+to a browser or shared account. Existing server-side Groww session configuration
+is still required.
+
+The **Paper trading** panel starts each new account with INR 1,00,000 virtual cash.
+Open it from the fixed **Paper trading** button at the bottom-right of the workspace.
+The chatbot-style popup separates **Trade**, **Positions**, **Orders**, **History**
+and **Account** into focused tabs. Available cash and live open P&L stay visible
+above the tabs. Trade contains the order form; Positions shows entry/live prices
+and profit/loss with expandable margin details; Orders shows waiting triggers.
+Account holds synchronization, automation, simulation rules and the confirmed
+reset action. Use Left/Right arrows or Home/End to navigate the tabs with a keyboard.
+The popup scrolls independently and the workspace remains interactive.
+Use its close button, the launcher again, or Escape
+inside the popup to minimize it. Draft form inputs, live subscriptions and enabled
+automation stay active while minimized or switching tabs; neither pauses automation.
+The launcher flags paused automation or errors for review. Closing the terminal
+still stops automatic execution as described below.
+Connect Groww and use the panel's own stock picker, exchange and MIS/CNC selector
+to stream a specific stock independently of the analysis panel. Enter a quantity,
+choose an order type and confirm **Paper BUY** or **Paper SELL**. These actions never call the broker order
+endpoint and work independently of advisory verdicts. The authenticated server
+verifies CASH equity metadata and uses a server-signed live tick when available,
+otherwise fetching a new Groww REST quote. Live proofs bind the price, trade time,
+symbol and exchange to the authenticated Groww token using the server session
+secret; browser-edited prices or proofs cannot authorize a fill. This avoids
+rejecting a fresh streaming price just because the separate REST snapshot lags.
+Live proofs expire after 60 seconds and never extend the trade timestamp's age.
+Without a proof, stale or missing REST timestamps still block execution.
+User-entered limit, trigger, target and stop prices are instructions, never execution
+prices. Client-authored execution prices, balances and fill timestamps are not accepted. The displayed price
+is indicative and the final simulated execution can differ. Quotes must be
+same-day and at most 60 seconds old, rounded to paise, during weekday
+09:15-15:30 IST sessions. Fresh quotes are still required on exchange holidays;
+no holiday calendar is inferred.
+
+MIS permits longs and collateral-backed shorts; CNC permits buys and exits
+against this paper account's holdings only. New MIS longs and shorts reserve 20%
+of entry notional (fixed simulated 5x leverage); CNC purchases reserve 100%.
+The market price does not change between products on the same exchange.
+The form compares full entry value, intraday margin and carry-forward cost before
+submission. This fixed paper margin is not verified broker/stock eligibility.
+Entry basis and reserved collateral are stored separately: P&L uses the full
+quantity and actual entry price, never a discounted share price. Opposite trades reduce a position and realize
+P&L; close a position before reversing it. There are no fees, slippage or liquidity
+modelling, maintenance-margin checks or margin-call liquidation. Leverage magnifies
+losses as well as gains relative to reserved cash. New MIS entries stop at **15:20 IST**. With automatic execution enabled,
+MIS positions square off at the first fresh regular-session price at/after 15:20.
+If the terminal was closed, disconnected or lacked fresh prices, overdue MIS
+positions remain visible and close at the next available fresh regular-session
+price after resuming; a past 15:20 price is never invented. Short losses can leave virtual cash negative; closure is still
+allowed. Open positions show saved quantity, average entry price, buy/sell entry
+value, live price, current notional and directional unrealized P&L in INR and percent.
+Intraday and carry-forward summaries independently show live value, unrealized and
+realized P&L, and actual reserved collateral. A stale price in one product does not
+hide fresh P&L in the other. MIS/CNC for the same exchange/stock share one live price.
+The ledger conserves cash plus position collateral plus pending reservations
+against starting cash plus realized P&L. Partial exits release proportional
+collateral, with conservative paise rounding and all remaining collateral returned
+on the final exit. Existing positions retain their saved entry basis, collateral
+and cash balances; new MIS additions reserve 20%, so a mixed legacy/new position
+can have effective leverage below 5x. Version-1 records load without a reset and
+acquire explicit collateral fields; subsequent mutations persist version 2.
+
+### Paper order history and historical success rate
+
+The popup's **History** tab derives its history from the
+authenticated account's existing MongoDB fill records; it makes no additional
+history requests and does not poll. A compact performance card shows the overall
+score and completed-trade P&L; its expandable explanation documents the methodology.
+Switch between **Closed trades** and **All fills**, search by symbol, exchange or
+MIS/CNC, and expand any card for its full details. Search filters only the list,
+not the overall score. **Other order activity** lists completed/cancelled/expired/
+rejected instructions separately from executed fills.
+**All fills** lists every BUY/SELL with stock,
+exchange, MIS/CNC product, quantity, actual fill price, entry cost per share, full
+order value, realized profit/loss or break-even result, execution reason and IST
+timestamp. An opening BUY or short SELL is an entry, not a break-even result.
+Exit entry-cost prices use the released ledger cost basis, including paise rounding.
+
+**Completed positions** groups additions and partial exits from the first entry
+until that exchange/stock/product position returns to zero. It shows total shares
+entered/exited, average entry/exit prices, full entry/exit values, final P&L and
+opening/closing times. A later re-entry starts a new trade; simultaneous MIS/CNC
+and NSE/BSE positions are independent. Shorts use SELL entry and BUY exit.
+
+The overall historical score out of 100 is
+`winning fully closed positions / all fully closed positions * 100`.
+Partial exits count only after the remaining position is closed, using the
+combined result of all exits. Break-even trades are included in the denominator
+but are not wins. Open positions, pending/cancelled/rejected instructions and live
+unrealized marks do not affect the score. Wins, losses, break-even count and
+completed-trade P&L are shown separately; realized partial exits on still-open
+positions remain outside that completed-trade total. No completed trades means
+the score is unavailable, not zero. All saved stocks and both products since the
+last explicit account reset are included. A reset also clears these statistics.
+Existing history needs no data migration or reset.
+
+This is descriptive simulator performance, not a calibrated probability of future
+profit; the ledger still excludes fees and slippage. If saved fills cannot be
+reconciled with current positions/P&L, the UI reports an error instead of showing
+a misleading score or resetting history.
+
+### Conditional orders and browser-only execution
+
+- **Market:** immediate simulated fill at a verified live price.
+- **Limit (day):** BUY only at/below the limit; SELL only at/above it. MIS limits
+  expire at 15:20 IST; CNC day limits expire at 15:30 IST.
+- **GTT trigger + limit:** CNC only; an at/above or at/below trigger activates
+  a persistent limit order. Reaching the trigger does not guarantee a fill.
+  The triggered limit remains active across sessions until filled or cancelled.
+  GTT placement/cancellation does not require a live execution price.
+- **Target + stop-loss exit:** protects existing paper holdings. SELL exits a
+  long; BUY covers a short. A long's stop must be below its target, and the reverse
+  applies to shorts. The first matching condition completes the single linked
+  exit, so the other cannot also execute. The actual observed price is used:
+  a gap through a stop may fill worse than its stop price.
+- **Attach target + stop-loss to entry:** creates linked protection for the
+  resulting whole position after a Market, Limit or GTT entry fills. Entry
+  protection must straddle the entry/limit price. Later quantity changes cancel
+  pending exits for that position; explicitly reapply protection as needed.
+
+New pending opening orders reserve 20% (MIS) or 100% (CNC) of quantity times limit price, separately
+from position collateral. Cancellation, expiry or rejection releases that reserve;
+fills release it before charging margin for the actual fill notional, returning unused cash.
+A short selling above its limit can require extra collateral and is explicitly
+rejected if unavailable. Pending closing orders cannot create/reverse positions
+if holdings change. Both target/stop legs are represented by one persisted order.
+Statuses and fill reasons distinguish LIMIT, GTT, TARGET, STOP_LOSS and SQUARE_OFF.
+Legacy accounts acquire an empty order list without resetting balances/history.
+Existing pending reservations retain their saved amount until fill, cancellation
+or expiry; a new MIS fill then reserves the current 20% margin.
+
+**Automatic orders run only while this terminal is open, enabled and connected.**
+They are not real broker GTT orders and no background server worker runs after
+the terminal closes. Browser throttling or network outages can delay execution.
+Reconnection checks current observed prices, not missed historical crossings.
+The client evaluates ticks locally and submits a signed-price processing command
+only for a matching trigger, order expiry or MIS square-off; unchanged ticks do
+not poll the paper-account API. The server independently rechecks every rule.
+Concurrent tabs use the same revision/idempotency checks, preventing double fills.
+An automatic request failure pauses that tab's automation until the user reviews
+the refreshed account and selects **Resume automatic paper orders**.
+
+Account ownership uses a SHA-256 namespaced identifier derived from Groww's
+server-verified `vendor_user_id`, not the access token or a browser-supplied user
+ID. The raw profile ID and access token are not stored in MongoDB. Renewing a token
+for the same Groww user restores the same account across devices. A missing
+verified identifier fails explicitly. Profile checks are cached server-side by
+token hash for at most 30 seconds; expired/denied sessions stop synchronization.
+
+Positions, conditional orders, reservations, realized P&L and fill history are saved together atomically in one
+user document with majority write concern. Revision-based compare-and-swap
+prevents cross-client lost updates and overspending. Operation IDs are recorded
+with request fingerprints (last 200 retained) for idempotent acknowledgments;
+revision checks prevent older evicted operations from being executed again.
+Conflicting updates require an account refresh and a new manual review, not
+automatic trade retries. An uncertain update reports an error: check refreshed
+history before another submission. Account documents are capped at 8 MB; reaching
+the limit requires an explicit reset rather than silently discarding history.
+
+The authenticated `/api/groww/paper` endpoint loads on entry, tab focus and manual
+refresh, not on a repeating timer. Successful trade/reset responses already
+contain the updated account; failed actions refresh it before another submission.
+Changes made on another device appear on focus or **Refresh paper account**;
+there is no background account polling or MongoDB change stream.
+The selected paper stock, active orders and all open positions share a multiplexed Groww SSE price stream
+(one broker connection per batch of at most 50 distinct exchange/symbol pairs).
+MIS and CNC positions in the same stock share its price subscription. P&L updates
+in the browser on ordinary ticks without reading or writing MongoDB. Triggered
+order transitions are persisted atomically. Stale, missing or
+disconnected prices are explicitly unavailable and excluded from the total;
+the total is shown only when every open position has a fresh price.
+**Reconnect paper prices** restarts failed price streams. Positions can be closed from
+their cards without selecting the stock in the analysis panel; normal session,
+quote freshness, signed-price and server ledger checks still apply.
+**Reset paper account** clears only the signed-in user's MongoDB positions/orders/history
+on all devices and restores the starting balance. Browser-only records from the
+previous implementation are neither imported nor deleted; clearing browser data
+does not delete the MongoDB account. This ledger remains separate from real
+holdings and the older order-review PAPER simulation receipts.
 
 ## Components and data
 
@@ -161,62 +465,117 @@ Daily candles are not filtered by their intraday start clock. Missing bars or
 session boundaries within the retained intraday history still prevent testing,
 because stop/target outcomes could have occurred during the unobserved period.
 
-**Save scenario alerts** stores each available displayed 15-/30-minute range in
-this browser's localStorage, including stock/exchange/segment, exact F&O contract,
-bias, reference price, ATR, bounds, snapshot time, save time and fixed deadline.
-New live prices or refreshed estimates do not move saved targets or deadlines.
-Saving the exact same displayed horizon again does not create a duplicate.
+The **15-30m scenarios** disclosure still shows current heuristic price ranges.
+The terminal no longer offers saved-scenario controls, monitoring or notifications.
+Previously saved browser records are not deleted, but are no longer loaded or
+processed. Scenario ranges are not calibrated forecasts or guaranteed prices.
 
-Bullish price alerts trigger at or above the upper bound; bearish at or below the
-lower bound; neutral alerts accept either boundary. Only fresh live ticks for the
-currently selected instrument, timestamped at/after saving, are eligible. Price
-monitoring does not follow stocks after switching away and does not add REST
-polling, subscriptions, orders or model calls. Deadline checks cover all saved
-stocks even when Groww is disconnected. Each horizon completes on its first
-qualifying observation or deadline; time wins ties. Delayed ticks received after
-the deadline do not retroactively replace a time notification.
+The decision-focused workspace keeps stock/mode selection, LTP, day change and
+trade/snapshot times above the analysis. Desktop puts price action and compact
+indicator cards beside the setup decision, agreement checks, reference risk plan
+and entry timing. Mobile puts the decision first, then the chart.
+Indicator snapshot combines all seven indicator values, rule signals and evidence
+explanations in one set of cards, with the selected mode's indicators first.
+Rules, freshness and risk notes are expandable inside that same panel; there is
+no separate full-evidence section in the setup decision. Price-relative evidence
+uses the same live quote as the decision while candle values remain snapshots.
 
-In-app notifications remain until dismissed, with completed history under
-**Saved scenario alerts**; pending alerts can be cancelled and history deleted.
-Reloading restores alerts and processes overdue deadlines without retriggering
-completed alerts. Browser closure/suspension and throttled background timers can
-delay notification display until the dashboard resumes; this is not a background
-broker alert service. Web Locks coordinate writes across tabs where supported;
-otherwise use one dashboard tab. Invalid/blocked/full storage reports an explicit
-error rather than claiming a save, and invalid stored records are not overwritten
-without an explicitly confirmed reset. Clearing browser storage deletes alerts.
-Saved ranges are heuristic scenarios, not calibrated forecasts or guaranteed prices.
+The trend-rule CASH decision shows **WAIT** when entry timing is not cleared even if
+the underlying rule signal is BUY/SELL; the original signal remains labeled
+separately. Exit-only CASH/option signals show **EXIT / AVOID**, never a new short
+entry. A reference plan can remain visible while waiting but is explicitly labeled
+not cleared for entry. This presentation does not change order eligibility or rules.
 
-The desktop workspace uses a gainers/losers sidebar and places the chart/indicator cards
-beside the technical verdict at wide-screen sizes (optimized for 1920 x 1080).
-Stock selection and quote stay above the analysis. Portfolio tables, screened-stock
-diagnostics, full indicator evidence, optional Gemini analysis and order/calculator
-tools are expandable rather than stacked open. Expanding a section does not remount
-its contents or trigger model calls/orders. Market-data errors remain visible.
-Smaller screens stack the columns; long stock lists scroll within the
-desktop sidebar. Detailed views may still need scrolling when expanded.
+Timing guides, all rejection reasons, indicator rules/risk notes, historical win rates,
+15-30 minute scenarios, AI second opinions and order/calculator tools are
+collapsed by default. Session context remains expandable; the broker portfolio
+is available from the fixed bottom bar.
+Native disclosures preserve mounted content; expanding
+them does not itself call a model or submit an order. Feed/snapshot failures and
+data-quality summaries stay visible. A skip link and keyboard-visible disclosure
+focus support navigation without a mouse. Conditional setups are not guaranteed
+correct trading decisions.
 
-**Today's gainers & losers** loads automatically after connecting Groww.
-`GET /api/groww/market-movers` fetches validated Groww quotes for the existing
-tracked NSE CASH universe: RELIANCE, HDFCBANK, ICICIBANK, INFY, TCS, SBIN, LT and
-ITC. This is not a whole-market ranking. Gainers are sorted by descending day
-percentage change versus previous close; losers by ascending percentage change.
-All matching stocks are listed; unchanged stocks are counted separately.
-Only quotes with valid last trades on today's IST date are included, so before
-trading, on holidays or when no current-date quotes exist, the lists can be empty.
-Unavailable/invalid quotes and previous-date trades have explicit exclusion warnings;
-total upstream failure returns an error. Each stock shows LTP, absolute/percentage
-day change and last-trade time, labeled stale after 60 seconds. A list from a
-previous date is hidden until refreshed.
+The separate **Price action & confluence** card adds a CASH/MIS advisory verdict:
+**CONDITIONAL BUY**, **CONDITIONAL SELL**, or **WAIT**. It does not replace the
+trend-rule decision, authorize orders, or change broker/timing checks. Its inputs
+are the already-loaded dedicated 15-minute candles, quote and optional benchmark:
 
-**Refresh list** fetches a new snapshot with two workers, per-quote 15-second
-timeouts and an overall 45-second deadline. No candles, technical filters,
-automatic polling, sample fallback, model calls or orders are involved.
-Clicking a stock selects CASH/NSE, MIS and 15-minute candles, then loads fresh
-individual analysis. A gainer/loser is not a BUY/SELL recommendation.
+- The 30-minute ORB uses exactly the two closed 09:15 and 09:30 IST candles.
+  A subsequent closed candle must confirm a new breakout/breakdown; a forming
+  candle or LTP crossing alone cannot confirm one.
+- Structural bands use ORB boundaries, the previous complete session, prior
+  intraday extremes, and two-left/two-right swing pivots confirmed before the
+  signal candle. Proximity is +/-0.1% of reference price (minimum Rs 0.01).
+  Rejection wicks, body engulfing and inside-bar breaks only qualify at these
+  boundaries; inside-bar compression alone is not an entry. These are observed
+  price bands, not proof of institutional supply/demand or order blocks.
+- Volume confirmation requires at least 1.5x the mean of the same 15-minute slot
+  in five prior observed sessions. Missing/zero baselines are unavailable, not
+  replaced with fabricated volume. Low volume means unconfirmed, not a proven trap.
+- Groww quote depth is optionally preserved with its actual server receipt time,
+  before waiting for candle-history responses. Five non-empty levels on each side
+  are required. REST depth becomes unavailable after 15 seconds; LTP ticks never
+  refresh it. The advisory rejects a reported spread above 0.2% or opposing
+  quantity imbalance of at least 20%. Resting orders can be cancelled/spoofed;
+  they do not establish executed order flow or institutional commitment.
+- Expand the benchmark selector, explicitly load the NSE index list and choose
+  the appropriate sector index. The authenticated `/api/groww/benchmark` endpoint
+  verifies `CASH/IDX` membership against Groww's catalogue before requesting a
+  quote; arbitrary stock symbols are rejected. Day direction is compared only
+  while the index quote/receipt is fresh within 60 seconds. Sector membership is
+  user-selected, not auto-inferred; a broad index is only a market proxy, and
+  direction alignment is not a measured correlation.
 
-The legacy `GET /api/groww/top-picks` technical-screening endpoint remains available
-for API consumers, but is no longer used by the dashboard sidebar.
+Known opposing benchmark/book evidence blocks a setup. Missing context is
+explicitly labeled and leaves any otherwise qualified verdict conditional.
+Market-wide advances/declines and executed order flow are not connected; the
+eight tracked movers are **not** substituted for market breadth. These heuristic
+thresholds have not been established as optimal or backtested for a success rate;
+the existing trend-rule historical percentages do not apply to this strategy.
+Depth adds no upstream requests beyond the existing quote; index-list and
+benchmark requests happen only after explicit user actions. No orders/model
+calls are made by this card. CNC/NRML/F&O are not modeled by the new strategy.
+
+The visible **Next 15 minutes · historical evidence** section separates the
+trend-rule decision from two descriptive studies. For an eligible MIS 15-minute
+BUY/SELL plan, it reports how often historical same-side strict-rule plans reached
+target 1 before their stop in the immediately following 15-minute candle. The
+denominator includes stops and neither-hit timeouts, not just completed winners.
+Known opening gaps are evaluated before intrabar touches; otherwise ambiguous
+bars are stop-first. This measures target attainment, not after-cost profitability.
+WAIT, exit-only and non-15-minute plans do not receive invented entry-success rates.
+
+The RSI study reports overbought (RSI >= 70) to oversold (RSI <= 30), or the reverse,
+at the next 15-minute close. These reversal thresholds are distinct from the
+existing trend-entry rules and do not change them. Samples match the current
+RSI zone; middle values use the same 10-point RSI band and have no extreme-reversal
+success percentage. Percentages include counts and descriptive 95% Wilson
+intervals; fewer than 30 observations are explicitly labeled unreliable, and
+zero observations mean unavailable rather than 0% success.
+
+With at least 30 same-RSI observations, the panel rebases their next-close returns
+to the current quote and shows the median and historical 10th-90th percentile
+price range. This is not a calibrated 80% forecast or a live probability. Trials
+start at historical candle closes; their application mid-candle is an analogue
+estimate, not a validated rolling-15-minute prediction. An unfinished snapshot RSI
+is labeled provisional. Expand the study to see hypothetical next-candle prices
+for RSI 70 and 30, solved from Wilder average gains/losses at the last closed
+candle. These threshold prices are mathematical references, not price forecasts.
+
+Both studies reuse the selected instrument's existing dedicated 15-minute history.
+Only closed prefixes and completed same-session outcomes are counted; missing,
+misaligned or omitted OHLC bars invalidate the study. A fresh same-day quote and
+a full 15 minutes before regular session close are required. Historical features
+are memoized per REST snapshot, not recomputed on each live tick. There are no
+additional market-data/model calls or orders. Limited history, serial correlation,
+changing regimes and absent out-of-sample calibration prevent treating these
+figures as guaranteed success percentages.
+
+The terminal does not display or automatically fetch a gainers/losers section.
+`GET /api/groww/market-movers` and the legacy `GET /api/groww/top-picks`
+technical-screening endpoint remain available for API consumers, but are not used
+by the dashboard.
 
 All historical-candle requests from screening and individual analysis share a
 per-token server-process queue: only one is in flight, and starts are spaced at
@@ -452,13 +811,44 @@ Freshness is reevaluated every five seconds even if no ticks arrive. Opening ord
 review captures its analysis side/price so later ticks cannot silently change the
 reviewed instruction. No order, GTT, stop or target is placed automatically.
 
-Each indicator has an **i** button in the indicator panel, technical verdict and
+Each indicator has an **i** button in the unified indicator snapshot and
 Gemini input-evidence cards. Hover or keyboard focus opens a tooltip; clicking
 pins it for touch users. Escape, blur or an outside click dismisses it. Tooltips
-show the **unrounded supplied values** (including all three MACD fields and
-SuperTrend line/direction), periods, units and interpretation rules. They do not
-invent an ideal indicator value or estimate missing data. F&O OI/change/IV cards
-also explain the provider-reported values without guessing IV units.
+show **ideal ranges / decision references**, not the current supplied values:
+RSI 55-70 bullish / 30-45 bearish (inclusive), price versus VWAP and EMA ordering,
+MACD line/signal and histogram direction, SuperTrend agreement, and positive ATR
+with a minimum 1.5xATR risk distance. Indicators without a universal ideal number
+use relative conditions instead. Actual values remain on the cards, and reference
+guidance is available even before data loads. F&O OI/change/IV tooltips explain
+that there is no universal ideal threshold, without guessing IV units.
+These references do not change the trading rules or guarantee outcomes.
+
+### Stock entry timing (IST)
+
+The CASH technical-verdict panel shows general timing guidance for both intraday
+BUY/short SELL and carry-forward BUY, plus a live **conditions met / WAIT** status
+for the selected stock and mode. It reuses the code-calculated verdict and its
+five-second clock; no extra requests, model calls or orders are triggered.
+
+The regular weekday schedule is 09:15 inclusive to 15:30 exclusive IST. Around
+09:30 is a first-15-minute-candle review checkpoint, not a statistically proven
+best entry time or a new signal gate. Intraday positions must allow time to exit
+before the broker's own MIS cutoff, which may be earlier than exchange close.
+For daily-close confirmation, review a completed 1D candle after 15:30 and
+reassess in a later regular session rather than treating an after-close signal
+as permission to enter immediately.
+
+The timing overlay requires an actionable existing rule verdict with risk levels,
+regular scheduled hours and a same-IST-date quote no older than 60 seconds
+(at most five seconds ahead). Carry-forward timing additionally requires 1D
+candles and BUY; it never offers a new overnight CASH short. This is stricter
+than the base CNC freshness policy and does not change the underlying verdict
+or order eligibility. Today's unfinished daily candle is explicitly labeled
+**provisional**, not daily-close confirmation.
+
+There is no universally ideal or guaranteed profitable clock time. The weekday
+schedule is not a holiday/special-session calendar or proof the exchange is open.
+Opening gaps, liquidity and broker permissions still need checking.
 
 ### Next 15-30 minute scenarios (no LLM)
 
@@ -816,9 +1206,30 @@ connect Groww, select a stock during market hours and confirm fresh trade ticks.
 Closed markets may correctly show last-known/stale prices. To update the app,
 run `npm run docker:start`; open feeds disconnect during restart and
 users can use **Reconnect feed** afterward. The image health check verifies HTTP
-readiness only, not Groww permissions or whether the market is trading.
+readiness at `/login` only, not database authentication, Groww permissions or
+whether the market is trading.
 
 ### Holdings and positions
+
+Use **Holdings & positions** in the fixed bottom bar. Hover to preview the stock
+list, or click/tap to keep it open. Keyboard focus also opens it; Escape, the
+close button, clicking outside or leaving keyboard focus dismisses the preview.
+Moving the pointer into the preview keeps it open so you can scroll, filter and
+refresh. Each holding shows purchase price per share, quantity and ISIN. Position
+cards show long/short/closed status, exchange, segment, product, net quantity,
+net average price and realised P&L. Live price, unrealized profit/loss (INR and
+percent), entry value and current market value update for each open holding or
+position. Shorts gain when the live price falls; closed positions retain their
+realised result but do not subscribe to prices. These are broker records, not paper trades.
+The popup summary shows overall, holdings and positions live P&L in INR and percent.
+Overall adds holdings and the currently selected positions segment; percentages use
+the combined absolute entry value rather than averaging stock returns. Realised
+P&L and fees are excluded. Fresh-price coverage is shown, and incomplete totals
+are unavailable rather than displaying a misleading partial profit/loss. Summary
+updates reuse existing streamed prices without additional API requests.
+The preview fits the viewport and scrolls independently; reopening it does not
+refetch snapshots or reset the selected segment. On narrow screens the adjacent
+paper-trading launcher uses a compact **Paper** label to avoid overlap.
 
 The dashboard uses the encrypted session cookie to call these authenticated,
 read-only routes. The access token stays on the server:
@@ -835,14 +1246,31 @@ Both use Groww's `Accept: application/json`, Bearer authorization and
 `X-API-VERSION: 1.0` headers with a 15-second timeout and no caching.
 Response bodies follow `{ status: "SUCCESS", payload: { holdings: [...] } }` or
 `{ status: "SUCCESS", payload: { positions: [...] } }`. Only fields used by the
-tables are returned. Invalid or unsuccessful upstream JSON returns 502, not an
+cards are returned. Invalid or unsuccessful upstream JSON returns 502, not an
 empty portfolio. Other Groww HTTP failures keep their error status.
 
 Holdings and positions load independently, so one can remain visible if the other
-fails. Use **Refresh portfolio** to retry or update both snapshots. No portfolio
-polling or unrealised P&L is added. Empty accounts show explicit empty states.
+fails. Use **Refresh portfolio** to retry or update quantities and entry prices.
+There is no portfolio polling. Live marks use `(price - average entry) * signed
+quantity`, without leverage/lot multiplication or fees; position marks use Groww's
+`net_price` and remain separate from `realised_pnl`. A zero entry cost has no
+percentage return. Account snapshots are not automatically reconciled with trades
+made elsewhere; refresh after broker activity. Empty accounts show explicit empty states.
 Disconnecting clears the displayed portfolio and cancels pending requests. A
 Groww 401 clears the cookie, removes both lists and prompts you to reconnect.
+
+Authenticated `POST /api/groww/portfolio-instruments` resolves up to 50 selections
+against Groww's cached instrument catalog per request. Holdings use ISIN when
+the catalog supplies it, prefer NSE and fall back to BSE; each card labels the
+actual price source. Missing position segments are inferred only from a unique
+catalog match, never assumed to be CASH. Ambiguous, unsupported or expired
+instruments show an explicit valuation-unavailable message without blocking other
+stocks. CASH/FNO selections share a deduplicated multiplexed price stream (up to
+50 per connection). Paper trading reuses the same stream hook, retaining its
+CASH-only execution rules. Quotes older than 60 seconds, malformed/future ticks,
+identity mismatches and disconnected feeds cannot produce live P&L.
+Use **Reconnect portfolio prices** to retry resolution and streaming. Hovering
+or reopening the preview keeps existing subscriptions; disconnecting cancels them.
 
 Endpoint schemas follow the official
 [Groww portfolio API documentation](https://groww.in/trade-api/docs/curl/portfolio).

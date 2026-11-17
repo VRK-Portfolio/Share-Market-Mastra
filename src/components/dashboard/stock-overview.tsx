@@ -35,13 +35,18 @@ export function StockOverview({ data, symbol, exchange, mode, segment, contract,
         </div>
         {data?.instrument && <p className="mt-2 text-xs text-muted">{data.instrument.underlying} · {data.instrument.instrumentType} · Expiry {data.instrument.expiry} · Strike {money(data.instrument.strikePrice)} · Lot size {data.instrument.lotSize} · Tick {money(data.instrument.tickSize)} · Prices are {data.instrument.instrumentType === "FUT" ? "futures prices" : "option premiums"} per unit, not underlying prices.</p>}
       </div>
-      <div className="grid grid-cols-2 gap-3 px-4 py-3 sm:grid-cols-[1fr_1fr_auto]">
-        <div><p className="eyebrow">Latest LTP <span className="normal-case tracking-normal">({exchange})</span></p><p className="mt-1 font-mono text-2xl font-semibold tracking-tight">{money(quote?.price)}</p></div>
-        <div><p className="eyebrow">Day change</p><p className={`mt-2 flex items-center gap-2 font-mono text-xl font-medium sm:text-2xl ${quote?.change != null ? quote.change >= 0 ? "text-positive" : "text-negative" : "text-muted"}`}>{quote?.change != null ? `${quote.change >= 0 ? "+" : ""}${decimal(quote.change)} (${quote.changePercent == null ? "--" : `${quote.changePercent >= 0 ? "+" : ""}${decimal(quote.changePercent)}` }%)` : "--"}{quote?.change != null && <Icon name="arrow" className={`size-5 ${quote.change < 0 ? "rotate-90" : ""}`} />}</p></div>
-        <div className="col-span-2 flex items-center gap-5 sm:col-span-1 sm:border-l sm:border-line sm:pl-5">
-          <div><p className="eyebrow">Day high (snapshot)</p><p className="mt-2 font-mono text-sm">{money(quote?.high)}</p></div>
-          <div><p className="eyebrow">Day low (snapshot)</p><p className="mt-2 font-mono text-sm">{money(quote?.low)}</p></div>
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="break-words text-xs font-semibold">{data?.symbol || symbol || "Choose a stock"} <span className="font-normal text-muted">· {exchange} · {segment}</span></h2>
+          <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <p className="font-mono text-3xl font-semibold tracking-tight" aria-label="Latest LTP">{money(quote?.price)}</p>
+            <p aria-label="Day change" className={`font-mono text-sm ${quote?.change != null ? quote.change >= 0 ? "text-positive" : "text-negative" : "text-muted"}`}>{quote?.change != null ? `${quote.change >= 0 ? "+" : ""}${decimal(quote.change)} (${quote.changePercent == null ? "--" : `${quote.changePercent >= 0 ? "+" : ""}${decimal(quote.changePercent)}` }%)` : "--"}</p>
+          </div>
         </div>
+        <dl className="flex flex-wrap gap-x-5 gap-y-2 text-[11px]">
+          <div><dt className="text-muted">Day high / low · snapshot</dt><dd className="mt-1 font-mono">{money(quote?.high)} / {money(quote?.low)}</dd></div>
+          <div><dt className="text-muted">Last trade · IST</dt><dd className="mt-1 font-mono">{quote?.lastTradeTime == null ? "--" : new Date(quote.lastTradeTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}</dd></div>
+        </dl>
       </div>
     </section>
   );

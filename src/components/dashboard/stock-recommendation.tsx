@@ -87,7 +87,7 @@ export function StockRecommendation({ data, mode, onSessionExpired }: {
               : "histogram" in value ? `Line ${decimal(value.value)} / Signal ${decimal(value.signal)} / Histogram ${decimal(value.histogram)}`
               : `${decimal(value.value)} / ${value.direction}`;
             return <div key={item.indicator} className="rounded-xl border border-line bg-inset p-4">
-              <div className="flex items-center justify-between gap-2"><h3 className="text-xs font-semibold">{item.indicator} · {item.signal}</h3><IndicatorInfo name={item.indicator} values={snapshot} /></div>
+              <div className="flex items-center justify-between gap-2"><h3 className="text-xs font-semibold">{item.indicator} · {item.signal}</h3><IndicatorInfo name={item.indicator} /></div>
               <p className="mt-2 font-mono text-xs">{label}</p><p className="mt-2 text-xs text-muted">{item.explanation}</p>
             </div>;
           })}

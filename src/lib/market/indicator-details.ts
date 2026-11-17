@@ -1,7 +1,14 @@
-import type { TechnicalAnalysis } from "./types.ts";
 import type { IndicatorName } from "./technical-verdict.ts";
 
-export type IndicatorValues = Omit<TechnicalAnalysis, "overlays">;
+const references: Record<IndicatorName, string> = {
+  VWAP: "Bullish: price > session VWAP.\nBearish: price < session VWAP.",
+  RSI: "Bullish: RSI 55-70 (inclusive).\nBearish: RSI 30-45 (inclusive).\nOther values: no momentum confirmation.",
+  ATR: "ATR must be > 0 for risk sizing.\nMinimum stop distance: 1.5xATR.\nNo fixed ideal value or bullish/bearish direction.",
+  EMA20: "Bullish: price > EMA20 > EMA50.\nBearish: price < EMA20 < EMA50.",
+  EMA50: "Bullish: price > EMA20 > EMA50.\nBearish: price < EMA20 < EMA50.",
+  MACD: "Bullish: MACD line > signal and histogram > 0.\nBearish: MACD line < signal and histogram < 0.",
+  SUPERTREND: "Bullish: bullish direction and price > trend line.\nBearish: bearish direction and price < trend line.",
+};
 
 const descriptions: Record<IndicatorName, string> = {
   VWAP: "Volume-weighted average price, reset each IST trading session. Price above/below VWAP gives intraday bullish/bearish evidence; there is no universal ideal price.",
@@ -13,17 +20,10 @@ const descriptions: Record<IndicatorName, string> = {
   SUPERTREND: "ATR-based trend line using period 10 and multiplier 3. Bullish/bearish direction must agree with price above/below the line. It is not a guaranteed support or stop.",
 };
 
-export function indicatorDetails(name: IndicatorName, values: IndicatorValues | null) {
-  const value = values ? {
-    VWAP: values.vwap, RSI: values.rsi, ATR: values.atr, EMA20: values.ema20,
-    EMA50: values.ema50, MACD: values.macd, SUPERTREND: values.supertrend,
-  }[name] : null;
+export function indicatorDetails(name: IndicatorName) {
   return {
     label: name,
-    value: value === null ? "Unavailable: insufficient history or missing volume; no value is estimated."
-      : typeof value === "number" ? String(value)
-        : "histogram" in value ? `Line: ${value.value}; signal: ${value.signal}; histogram: ${value.histogram}`
-          : `Trend line: ${value.value}; direction: ${value.direction}`,
+    reference: references[name],
     description: descriptions[name],
   };
 }

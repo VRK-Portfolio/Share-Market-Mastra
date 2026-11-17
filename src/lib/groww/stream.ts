@@ -2,6 +2,7 @@ import childProcess from "node:child_process";
 import { delimiter, resolve } from "node:path";
 import { workerMessageSchema } from "./live-schemas.ts";
 import type { FeedDiagnostic, FeedInstrument } from "./live-schemas.ts";
+import { signExecutionQuote } from "../paper/execution-quote.ts";
 
 export class GrowwFeedError extends Error {
   readonly status: number;
@@ -24,7 +25,10 @@ export class GrowwFeedError extends Error {
   }
 }
 
-export function startGrowwFeed(token: string, instrument: FeedInstrument, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+export function startGrowwFeed(token: string, selection: FeedInstrument | FeedInstrument[], signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+  const instruments = Array.isArray(selection) ? selection : [selection];
+  if (!instruments.length || instruments.length > 50) return Promise.reject(new GrowwFeedError(502));
+  const instrument = instruments[0];
   const python = process.env.GROWW_FEED_PYTHON || (process.platform === "win32" ? "python" : "python3");
   const virtualEnvBin = resolve(".groww-venv", process.platform === "win32" ? "Scripts" : "bin");
   if (signal.aborted) return Promise.reject(new GrowwFeedError(499));
@@ -113,7 +117,17 @@ export function startGrowwFeed(token: string, instrument: FeedInstrument, signal
               }
             } else if (ready) {
               if ((controller.desiredSize ?? 0) <= -32) { finish(new GrowwFeedError(502)); return; }
-              send({ ...identity, ...message, receivedAt: new Date().toISOString() });
+              const source = message.subscription === undefined
+                ? (instruments.length === 1 ? instrument : undefined) : instruments[message.subscription];
+              if (!source) { finish(new GrowwFeedError(502, { stage: "decoding", failureType: "invalid-tick" })); return; }
+              const paperQuoteProof = source.segment === "CASH" && source.instrumentType === "EQ"
+                ? signExecutionQuote(token, {
+                  symbol: source.symbol, exchange: source.exchange, segment: "CASH",
+                  price: message.price, tradeTime: message.tradeTime,
+                }) : undefined;
+              send({ symbol: source.symbol, exchange: source.exchange, segment: source.segment,
+                type: "tick", price: message.price, tradeTime: message.tradeTime,
+                receivedAt: new Date().toISOString(), paperQuoteProof });
             }
           } catch {
             finish(new GrowwFeedError(502));
@@ -121,7 +135,8 @@ export function startGrowwFeed(token: string, instrument: FeedInstrument, signal
           boundary = buffer.indexOf("\n");
         }
       });
-      worker.stdin?.end(JSON.stringify({ accessToken: token, ...instrument }) + "\n");
+      worker.stdin?.end(JSON.stringify({ accessToken: token,
+        ...(Array.isArray(selection) ? { instruments } : instrument) }) + "\n");
     } catch {
       finish(new GrowwFeedError(503));
     }

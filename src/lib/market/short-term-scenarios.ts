@@ -1,4 +1,5 @@
 import { calculateTechnicalVerdict } from "./technical-verdict.ts";
+import { regularMarketSession } from "./market-session.ts";
 import type { MarketAnalysis } from "./types.ts";
 
 type ScenarioRow = { minutes: 15 | 30; endsAt: string } & (
@@ -18,12 +19,11 @@ export function calculateShortTermScenarios(analysis: MarketAnalysis | null, now
   if (!verdict.dataReady || atr === null || atr <= 0 || !analysis.fetchedAt) {
     return { available: false, reason: verdict.reasons.join(" ") || "A positive 15-minute ATR and fresh quote/candles are required." };
   }
-  const ist = new Date(now + 330 * 60_000);
-  const minuteOfDay = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  if (ist.getUTCDay() === 0 || ist.getUTCDay() === 6 || minuteOfDay < 9 * 60 + 15 || minuteOfDay >= 15 * 60 + 30) {
+  const session = regularMarketSession(now);
+  if (session.phase !== "open") {
     return { available: false, reason: "Short-term scenarios are only shown during the regular weekday NSE/BSE session (09:15-15:30 IST)." };
   }
-  const close = Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate(), 15, 30) - 330 * 60_000;
+  const close = session.closesAt;
   const bias = verdict.decision === "BUY" ? "BULLISH" : verdict.decision === "SELL" ? "BEARISH" : "NEUTRAL";
   const price = analysis.quote.price;
   const tick = analysis.instrument?.tickSize ?? 0.01;

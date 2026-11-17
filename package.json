@@ -16,7 +16,9 @@
     "setup:groww-feed": "python3 -m venv .groww-venv && .groww-venv/bin/python -m pip install -r scripts/groww/requirements.txt",
     "test:groww-feed": ".groww-venv/bin/python -m unittest discover -s scripts/groww -p 'test_*.py'",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test tests/indicators.test.mjs tests/technical-verdict.test.mjs tests/backtest.test.mjs tests/scenario-alerts.test.mjs tests/trade-calculator.test.mjs tests/sample-data.test.mjs tests/groww-session.test.mjs tests/groww-connection.test.mjs tests/groww-portfolio.test.mjs tests/groww-stock-search.test.mjs tests/groww-analysis.test.mjs tests/groww-recommendation.test.mjs tests/groww-fno.test.mjs tests/groww-stream.test.mjs tests/groww-orders.test.mjs tests/groww-top-picks.test.mjs tests/groww-historical-requests.test.mjs tests/groww-market-movers.test.mjs"
+    "setup:paper-db": "node --env-file=.env --experimental-strip-types scripts/setup-paper-db.mjs",
+    "setup:terminal-login": "node --experimental-strip-types scripts/setup-terminal-login.mjs",
+    "test": "node --experimental-strip-types --test tests/indicators.test.mjs tests/technical-verdict.test.mjs tests/backtest.test.mjs tests/price-action-confluence.test.mjs tests/news-sentiment.test.mjs tests/paper-trading.test.mjs tests/mongodb-paper.test.mjs tests/terminal-auth.test.mjs tests/scenario-alerts.test.mjs tests/trade-calculator.test.mjs tests/sample-data.test.mjs tests/groww-session.test.mjs tests/groww-connection.test.mjs tests/groww-portfolio.test.mjs tests/groww-stock-search.test.mjs tests/groww-analysis.test.mjs tests/groww-recommendation.test.mjs tests/groww-fno.test.mjs tests/groww-stream.test.mjs tests/groww-orders.test.mjs tests/groww-top-picks.test.mjs tests/groww-historical-requests.test.mjs tests/groww-market-movers.test.mjs"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.173",
@@ -31,6 +33,7 @@
     "axios": "^1.21.1",
     "csv-parse": "^7.0.3",
     "mastra": "^1.38.0",
+    "mongodb": "^7.9.0",
     "next": "16.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0",

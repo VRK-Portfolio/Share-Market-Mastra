@@ -96,6 +96,7 @@ export function OrderReview({ recommendation: currentRecommendation, onSessionEx
   return <div className="mt-5 rounded-xl border border-line bg-inset p-4">
     <h3 className="text-xs font-semibold">Order actions</h3>
     <p className="mt-2 text-xs text-muted">Analysis levels are conditional, not instructions to trade. Review an entry/exit order yourself. Targets, stop-loss and GTT are not submitted or linked. MARKET orders have no price guarantee.</p>
+    <p className="mt-2 text-xs text-muted">PAPER orders here are standalone simulation receipts, not paper-account positions. Use the separate Paper trading panel to manage virtual cash, holdings and P&amp;L.</p>
     <button type="button" className="secondary-button mt-3 text-xs" disabled={!eligible && !preview}
       onClick={() => {
         if (!preview && !attempted) {

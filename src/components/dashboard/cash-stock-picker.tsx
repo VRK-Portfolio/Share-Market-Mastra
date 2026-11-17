@@ -13,7 +13,8 @@ export function CashStockPicker({ symbol, exchange, onSelect, onSessionExpired }
 }) {
   const id = useId();
   const list = useRef<HTMLUListElement>(null);
-  const [query, setQuery] = useState(symbol);
+  const [queryState, setQueryState] = useState({ symbol, text: symbol });
+  const query = symbol && queryState.symbol !== symbol ? symbol : queryState.text;
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [revision, setRevision] = useState(0);
@@ -57,7 +58,7 @@ export function CashStockPicker({ symbol, exchange, onSelect, onSessionExpired }
   function select(index: number) {
     const instrument = matches?.[index];
     if (!instrument) return;
-    setQuery(instrument.tradingSymbol);
+    setQueryState({ symbol: instrument.tradingSymbol, text: instrument.tradingSymbol });
     setOpen(false);
     setActive(0);
     onSelect(instrument.tradingSymbol);
@@ -72,9 +73,9 @@ export function CashStockPicker({ symbol, exchange, onSelect, onSessionExpired }
         className="field w-full pr-16" value={query} maxLength={100} autoComplete="off" spellCheck={false}
         placeholder="Name or symbol, e.g. Reliance"
         onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
-        onChange={(event) => { setQuery(event.target.value); setOpen(true); setActive(0); onSelect(""); }}
+        onChange={(event) => { setQueryState({ symbol: "", text: event.target.value }); setOpen(true); setActive(0); onSelect(""); }}
         onKeyDown={(event) => {
-          if (event.key === "Escape") { event.preventDefault(); setOpen(false); }
+          if (event.key === "Escape" && expanded) { event.preventDefault(); setOpen(false); }
           else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
             setOpen(true);

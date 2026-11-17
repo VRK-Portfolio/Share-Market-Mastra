@@ -4,6 +4,9 @@ import { cashInstrumentSchema, fnoInstrumentSchema } from "./instrument-schemas.
 import type { FnoInstrument } from "./instrument-schemas.ts";
 import { feedInstrumentSchema } from "./live-schemas.ts";
 import { orderInstrumentSchema } from "./order-schemas.ts";
+import { indexInstrumentSchema } from "./benchmark-schemas.ts";
+import { feedSelectionSchema } from "./live-schemas.ts";
+import type { PortfolioInstrumentSelection } from "./portfolio-instrument-schemas.ts";
 
 const decimal = z.string().regex(/^\d+(?:\.\d+)?$/).transform(Number).pipe(z.number().finite());
 const strike = z.string().regex(/^-?\d+(?:\.\d+)?$/).transform(Number).pipe(z.number().finite());
@@ -109,6 +112,16 @@ export async function getFnoInstruments(signal: AbortSignal): Promise<FnoInstrum
   return (await getCatalog(signal)).instruments;
 }
 
+export async function getIndexInstruments(exchange: "NSE" | "BSE", signal: AbortSignal) {
+  const records = (await getCatalog(signal)).records;
+  return records.filter((row) => row.segment === "CASH" && row.instrument_type === "IDX" && row.exchange === exchange)
+    .map((row) => indexInstrumentSchema.parse({
+      exchange: row.exchange, tradingSymbol: row.trading_symbol, growwSymbol: row.groww_symbol,
+      name: row.name?.trim() || null, instrumentType: row.instrument_type,
+    }))
+    .sort((a, b) => a.tradingSymbol.localeCompare(b.tradingSymbol));
+}
+
 export async function searchCashInstruments(q: string, exchange: "NSE" | "BSE", signal: AbortSignal) {
   const query = q.trim().toUpperCase();
   const records = (await getCatalog(signal)).records;
@@ -138,6 +151,31 @@ export async function getFeedInstrument(symbol: string, exchange: "NSE" | "BSE",
   if (!record || (segment === "FNO" && record.expiry_date < currentIstDate())) return null;
   return feedInstrumentSchema.parse({
     symbol, exchange, segment, exchangeToken: record.exchange_token, instrumentType: record.instrument_type,
+  });
+}
+
+export async function getPortfolioInstruments(selections: PortfolioInstrumentSelection[], signal: AbortSignal) {
+  const { records } = await getCatalog(signal);
+  return selections.map(selection => {
+    const symbol = selection.symbol.toUpperCase();
+    const exchange = selection.exchange?.toUpperCase();
+    const segment = selection.isin ? "CASH" : selection.segment?.toUpperCase();
+    let candidates = records.filter(row => (!exchange || row.exchange === exchange) &&
+      (!segment || row.segment === segment) &&
+      (row.segment === "CASH" ? row.instrument_type === "EQ" : row.expiry_date >= currentIstDate()) &&
+      (selection.isin && row.isin ? row.isin === selection.isin : row.trading_symbol === symbol));
+    if (selection.isin && !exchange) {
+      const preferred = candidates.some(row => row.exchange === "NSE") ? "NSE" : "BSE";
+      candidates = candidates.filter(row => row.exchange === preferred);
+    }
+    const unique = [...new Map(candidates.map(row => [`${row.exchange}:${row.segment}:${row.trading_symbol}`, row])).values()];
+    const match = unique.length === 1 ? unique[0] : null;
+    const parsed = match ? feedSelectionSchema.safeParse({ symbol: match.trading_symbol, exchange: match.exchange, segment: match.segment }) : null;
+    return parsed?.success
+      ? { selection, instrument: parsed.data, error: null }
+      : { selection, instrument: null, error: unique.length > 1
+        ? "The portfolio instrument is ambiguous in Groww's catalog; a live valuation is unavailable."
+        : "No supported, unexpired portfolio instrument was found in Groww's catalog." };
   });
 }
 
