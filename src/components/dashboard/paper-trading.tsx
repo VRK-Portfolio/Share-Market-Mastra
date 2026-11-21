@@ -6,24 +6,27 @@ import { freshPaperPrice, paperPositionMark, paperProductSummary, paperQuoteErro
 import type { PaperQuote } from "../../lib/market/paper-trading";
 import { activePaperOrder } from "../../lib/market/paper-order-schemas";
 import { nextPaperProcessing } from "../../lib/market/paper-orders";
-import { paperRiskReport } from "../../lib/market/paper-risk";
+import { paperExitSuggestion, paperRiskReport } from "../../lib/market/paper-risk";
 import { usePaperTrading } from "./use-paper-trading";
 import { usePaperPrices } from "./use-paper-prices";
 import { PaperOrderForm } from "./paper-order-form";
 import { PaperOrderHistory } from "./paper-order-history";
+import { PaperEntryQualityPanel } from "./paper-entry-quality";
 import type { PaperSelection } from "./paper-order-form";
 import { money } from "./format";
 import { Icon } from "./icons";
 import { paperPriceKey, paperSegment } from "../../lib/market/paper-instruments";
 import { regularMarketSession } from "../../lib/market/market-session";
+import { paperCharges, paperExecutionPrice } from "../../lib/market/paper-costs";
 
 const sections = [
   ["trade", "Trade"], ["positions", "Positions"], ["orders", "Orders"], ["history", "History"], ["account", "Account"],
 ] as const;
 type PaperView = typeof sections[number][0];
 
-export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: {
+export function PaperTrading({ connected, onSessionExpired, segment = "CASH", workspaceSelection = null }: {
   connected: boolean; onSessionExpired: () => void; segment?: "CASH" | "FNO";
+  workspaceSelection?: PaperSelection | null;
 }) {
   const popupId = useId();
   const titleId = useId();
@@ -34,8 +37,14 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<PaperView>("trade");
   const paper = usePaperTrading(connected, onSessionExpired);
-  const [selection, setSelection] = useState<PaperSelection>({ symbol: "", exchange: "NSE", product: "MIS",
+  const [selection, setSelection] = useState<PaperSelection>(workspaceSelection ?? { symbol: "", exchange: "NSE", product: "MIS",
     ...(segment === "FNO" ? { segment: "FNO" } : {}) });
+  const [workspaceSource, setWorkspaceSource] = useState(workspaceSelection);
+  // Keep the account and automation mounted while resetting only the ticket's selection.
+  if (workspaceSource !== workspaceSelection) {
+    setWorkspaceSource(workspaceSelection);
+    if (segment === "FNO") setSelection(workspaceSelection ?? { symbol: "", exchange: "NSE", product: "MIS", segment: "FNO" });
+  }
   const account = paper.account;
   const activeOrders = account?.orders.filter(activePaperOrder) ?? [];
   const positions = account?.positions.filter(position => paperSegment(position) === segment) ?? [];
@@ -93,6 +102,7 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
   }
   function togglePopup() {
     if (popup.current?.open) { minimizePopup(); return; }
+    if (segment === "FNO" && workspaceSelection) setSelection(workspaceSelection);
     // Non-modal so the market workspace remains usable beside the trading popup.
     popup.current?.show();
     setOpen(true);
@@ -122,7 +132,15 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
       document.getElementById("paper-quantity")?.focus();
       return;
     }
-    if (!window.confirm(`PAPER ONLY: ${side} ${units} ${quote.symbol} (${quote.exchange}, ${quote.product})?\nDisplayed price ${money(quote.price)} is indicative. Remaining protection is retained/resized where valid. Estimated fees 0.10% and adverse slippage 0.05% apply to this fill. No real order.`)) return;
+    let fees: number;
+    try {
+      const price = paperExecutionPrice(quote.price, side, quote.instrument?.tickSize);
+      fees = paperCharges(Math.round(price * 100) * units, quote, side).total;
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Unable to estimate exit charges.");
+      return;
+    }
+    if (!window.confirm(`PAPER ONLY: ${side} ${units} ${quote.symbol} (${quote.exchange}, ${quote.product})?\nDisplayed price ${money(quote.price)} is indicative. Remaining protection is retained/resized where valid. Estimated charges ${money(fees / 100)} include flat Rs20 brokerage plus taxes/levies; 0.05% adverse slippage applies. No real order.`)) return;
     void submit({ type: "TRADE", symbol: quote.symbol, exchange: quote.exchange, product: quote.product,
       ...(quote.segment === "FNO" ? { segment: "FNO" } : {}),
       side, quantity: units, ...(quote.quoteProof ? { quoteProof: quote.quoteProof } : {}) });
@@ -174,7 +192,7 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
           {!connected ? "Connect Groww to start" : needsAttention ? "Account needs attention" : automation && automationOwner ? "Browser-only automation active" : "Automation inactive in this tab"}
           <span className="underline underline-offset-2">Manage</span>
         </button>
-        <p className="mt-2 text-[11px] text-warning">Browser-only exits stop when closed, offline or suspended. {risk ? `${risk.unprotected} unprotected positions.` : "Protection status unavailable."} {risk?.dailyLocked && "Daily entry lock active."}</p>
+        <p className="mt-2 text-[11px] text-warning">Browser-only exits stop when closed, offline or suspended. {risk ? `${risk.unprotected} unprotected positions.` : "Protection status unavailable."} {risk?.dailyLocked && "Daily loss guideline reached (information only)."}</p>
         <Link href="/risk" className="mt-2 inline-block text-[11px] text-accent underline">Open risk &amp; performance</Link>
       </div>
       <div role="tablist" aria-label="Paper trading sections" className="paper-navigation"
@@ -198,15 +216,23 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
         })}
       </div>
       <section ref={content} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" aria-label="Paper trading">
-    {(paper.error || formError || live.error || paper.message) && <div className="space-y-2 px-4 pt-3 text-xs">
-      {paper.error && <p role="alert" className="paper-notice text-negative">{paper.error}</p>}
+    {(view !== "trade" && (paper.error || paper.message) || formError || live.error) && <div className="space-y-2 px-4 pt-3 text-xs">
+      {view !== "trade" && paper.error && <p role="alert" className="paper-notice text-negative">{paper.error}</p>}
       {formError && <p role="alert" className="paper-notice text-negative">{formError}</p>}
       {live.error && <p role="alert" className="paper-notice text-negative">{live.error}</p>}
-      {paper.message && <p role="status" className="paper-notice text-positive">{paper.message}</p>}
+      {view !== "trade" && paper.message && <p role="status" className="paper-notice text-positive">{paper.message}</p>}
     </div>}
     <div role="tabpanel" id={`${popupId}-trade-panel`} aria-labelledby={`${popupId}-trade-tab`} hidden={view !== "trade"} tabIndex={0} className="paper-view">
-    <PaperOrderForm selection={selection} onSelection={setSelection} quote={quote} unavailable={unavailable}
+    {segment === "FNO" && workspaceSelection && <p className="mb-3 text-xs text-muted">
+      Trading-page contract: {workspaceSelection.symbol} · {workspaceSelection.product}. Prefilled when selected or when opening this ticket.
+      {positionKey(selection) !== positionKey(workspaceSelection) && <button type="button" className="ml-1 text-accent underline"
+        onClick={() => setSelection(workspaceSelection)}>Use trading-page contract</button>}
+    </p>}
+    <PaperOrderForm key={segment === "FNO" ? workspaceSelection ? positionKey(workspaceSelection) : "FNO" : "CASH"} selection={selection} onSelection={setSelection} quote={quote} unavailable={unavailable}
       account={account} prices={live.prices} now={now}
+      busy={paper.busy} submitError={paper.error} submitMessage={paper.message}
+      disabledReason={!connected ? "Connect Groww before placing a paper order." : paper.busy ? "A paper account update is in progress."
+        : !paper.canTrade || !account ? paper.error || "Waiting for the MongoDB paper account to synchronize. Check Account if this continues." : null}
       disabled={!connected || paper.busy || !paper.canTrade || !account} submit={submit} onSessionExpired={onSessionExpired} />
     </div>
     <div role="tabpanel" id={`${popupId}-account-panel`} aria-labelledby={`${popupId}-account-tab`} hidden={view !== "account"} tabIndex={0} className="paper-view space-y-4">
@@ -260,6 +286,7 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
       {positions.map((position, index) => {
         const tick = live.prices[paperPriceKey(position)];
         const mark = marks[index];
+        const suggestion = now === null ? null : paperExitSuggestion(position, activeOrders, connected ? tick : undefined, now);
         const closeQuote: PaperQuote | null = mark && tick ? {
           symbol: position.symbol, exchange: position.exchange, segment, product: position.product, instrument: position.instrument,
           price: tick.price, tradeTime: tick.tradeTime, quoteProof: tick.paperQuoteProof,
@@ -281,6 +308,18 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
             <div><dt>Average entry / {segment === "FNO" ? "unit" : "share"}</dt><dd>{money(position.basis / Math.abs(position.quantity) / 100)}</dd></div>
             <div><dt>Live price / {segment === "FNO" ? "unit" : "share"}</dt><dd>{mark ? money(mark.price) : "Unavailable / stale"}</dd></div>
           </dl>
+          <section className="mt-3 rounded-lg border border-line p-3 text-xs" aria-label={`${position.symbol} exit suggestion`}>
+            <p className="text-[10px] uppercase tracking-wide text-muted">Exit suggestion · paper only</p>
+            <h5 className={`mt-1 font-semibold ${suggestion?.action === "EXIT" || suggestion?.action === "REVIEW" ? "text-warning" : "text-accent"}`}>
+              {suggestion?.title ?? "Checking exit plan..."}
+            </h5>
+            <p className="mt-1 leading-relaxed text-muted">{suggestion?.reason ?? "Waiting for the market session and live price."}</p>
+            {suggestion?.targetPrice !== undefined && suggestion.stopPrice !== undefined && <dl className="paper-metrics mt-2">
+              <div><dt>Saved target</dt><dd>{money(suggestion.targetPrice / 100)}</dd></div>
+              <div><dt>Saved stop-loss</dt><dd>{money(suggestion.stopPrice / 100)}</dd></div>
+            </dl>}
+          </section>
+          {account && <PaperEntryQualityPanel account={account} position={position} connected={connected} onSessionExpired={onSessionExpired} />}
           <details className="mt-3 text-xs">
             <summary className="cursor-pointer text-muted">Position value &amp; margin</summary>
             <dl className="paper-metrics mt-3">
@@ -290,7 +329,9 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
             </dl>
           </details>
           <button type="button" className="secondary-button mt-4 w-full justify-center text-xs" disabled={paper.busy || !paper.canTrade || !closeQuote || !!closeError}
-            onClick={() => trade(position.quantity > 0 ? "SELL" : "BUY", Math.abs(position.quantity), closeQuote)}>Close paper position</button>
+            onClick={() => trade(position.quantity > 0 ? "SELL" : "BUY", Math.abs(position.quantity), closeQuote)}>{segment === "FNO"
+              ? position.quantity > 0 ? `SELL to close ${position.instrument!.instrumentType}` : "BUY to close short future"
+              : "Close paper position"}</button>
           {closeError && <p className="mt-2 text-xs text-warning">{closeError}</p>}
           {position.instrument && now !== null && position.instrument.expiry < regularMarketSession(now).date &&
             <p role="alert" className="mt-2 text-xs text-warning">Expired, unresolved paper position. No settlement, exercise or delivery price is fabricated; this position remains visible in your account.</p>}
@@ -299,7 +340,7 @@ export function PaperTrading({ connected, onSessionExpired, segment = "CASH" }: 
     </div>
     {!account ? <p className="paper-empty-state text-xs text-muted">{connected ? "Your positions will appear when the account loads." : "Connect Groww to see your paper positions."}</p>
       : !positions.length && <div className="paper-empty-state"><Icon name="chart" className="mx-auto size-7 text-accent" /><h4>No open positions</h4><p>Your {segment === "FNO" ? "contracts" : "stocks"} and live profit or loss will appear here after an order fills.</p><button type="button" className="secondary-button mt-4 text-xs" onClick={() => showView("trade")}>Place your first paper order</button></div>}
-    <p className="mt-4 text-[11px] leading-relaxed text-muted">To protect a position, choose Target + stop-loss exit in Trade. SELL exits a long; BUY covers a short.</p>
+    <p className="mt-4 text-[11px] leading-relaxed text-muted">Exit suggestions follow your saved plan and session rules, not a market forecast or a new automatic order. Open P&amp;L is before fees; final exits include modeled costs and slippage. To protect a position, choose Target + stop-loss exit in Trade. SELL exits a long; BUY covers a short.</p>
     <details className="workspace-details mt-4 text-xs">
     <summary>Intraday &amp; carry-forward breakdown</summary>
     {account && now !== null && <div className="mt-4 grid gap-3 sm:grid-cols-2">

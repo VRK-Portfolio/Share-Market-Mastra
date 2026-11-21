@@ -5,7 +5,7 @@ import {
   paperQuoteError, paperRequiredMargin, readPaperAccount,
 } from "../src/lib/market/paper-trading.ts";
 import {
-  cancelPaperOrder, nextPaperProcessing, placePaperOrder, processPaperOrders, protectPaperPosition,
+  cancelPaperOrder, nextPaperProcessing, paperDefaultProtection, placePaperOrder, processPaperOrders, protectPaperPosition,
 } from "../src/lib/market/paper-orders.ts";
 import { paperTradeHistory } from "../src/lib/market/paper-history.ts";
 
@@ -15,6 +15,20 @@ const fill = (account, side, quantity, changes = {}, time = now) =>
   fillPaperOrder(account, { ...quote, ...changes }, side, quantity, time);
 const limit = { symbol: "ADANIPORTS", exchange: "NSE", product: "MIS", side: "BUY", quantity: 10, kind: "LIMIT", limitPrice: 100 };
 const process = (account, price, at = now) => processPaperOrders(account, { ...quote, price, tradeTime: at }, at);
+
+test("paper protection defaults put target and stop 5% on the correct side with cash/contract tick rounding", () => {
+  assert.deepEqual(paperDefaultProtection(100, "BUY"), { targetPrice: 105, stopPrice: 95 });
+  assert.deepEqual(paperDefaultProtection(100, "SELL"), { targetPrice: 95, stopPrice: 105 });
+  assert.deepEqual(paperDefaultProtection(123.45, "BUY"), { targetPrice: 129.62, stopPrice: 117.28 });
+  assert.deepEqual(paperDefaultProtection(123.45, "SELL", 0.05), { targetPrice: 117.3, stopPrice: 129.6 });
+  assert.deepEqual(paperDefaultProtection(100.2, "BUY", 0.1), { targetPrice: 105.2, stopPrice: 95.2 });
+  for (const price of [undefined, NaN, Infinity, 0, -100, Number.MAX_SAFE_INTEGER, 0.01]) {
+    assert.equal(paperDefaultProtection(price, "BUY"), null);
+  }
+  for (const tick of [0, -0.05, NaN, Infinity, 0.001, 10]) {
+    assert.equal(paperDefaultProtection(1, "SELL", tick), null);
+  }
+});
 
 test("pending limits reserve cash, fill only at the limit or better, and release unused reservation", () => {
   const pending = placePaperOrder(newPaperAccount(), limit, now);
@@ -139,6 +153,8 @@ test("automation requests are emitted only for relevant fresh triggers, expiry o
   const legacy = newPaperAccount();
   delete legacy.orders;
   assert.deepEqual(paperAccountSchema.parse(legacy).orders, []);
+  const losing = fill(newPaperAccount(), "BUY", 1000);
+  assert.equal(nextPaperProcessing(losing, { "NSE:ADANIPORTS": { ...tick, price: 98 } }, now), null);
 });
 
 test("long additions and partial/full exits conserve cash, basis and realized P&L in paise", () => {
@@ -447,4 +463,39 @@ test("empty/reset history has no score, and unreconciled fills never produce a s
   const closed = fill(open, "SELL", 2, { price: 110 });
   assert.throws(() => paperTradeHistory({ ...closed, realized: 0 }), /cannot be reconciled/);
   assert.throws(() => paperTradeHistory({ ...closed, fills: [closed.fills[1]] }), /cannot be reconciled/);
+});
+
+test("closed-trade reasons explain long/short outcomes using execution prices and exit triggers", () => {
+  for (const [side, exitPrice, reason, expected] of [
+    ["BUY", 110, "TARGET", "Sold above entry (Rs100.00 -> Rs110.00). Exits: target hit."],
+    ["BUY", 90, "STOP_LOSS", "Sold below entry (Rs100.00 -> Rs90.00). Exits: stop-loss triggered."],
+    ["SELL", 90, "LIMIT", "Bought back below entry (Rs100.00 -> Rs90.00). Exits: limit exit."],
+    ["SELL", 110, "SQUARE_OFF", "Bought back above entry (Rs100.00 -> Rs110.00). Exits: automatic square-off."],
+    ["BUY", 100, "MARKET", "Average exit matched entry (Rs100.00 -> Rs100.00). Exits: market exit."],
+  ]) {
+    const opened = fill(newPaperAccount(), side, 10);
+    const closed = fillPaperOrder(opened, { ...quote, price: exitPrice }, side === "BUY" ? "SELL" : "BUY",
+      10, now, undefined, reason);
+    const snapshot = structuredClone(closed);
+    assert.equal(paperTradeHistory(closed).completed[0].outcomeReason, expected);
+    assert.deepEqual(closed, snapshot);
+  }
+});
+
+test("reasons combine all partial exits and additions without leaking triggers into later trades", () => {
+  let account = fill(newPaperAccount(), "BUY", 10);
+  account = fillPaperOrder(account, { ...quote, price: 110 }, "SELL", 4, now, undefined, "TARGET");
+  assert.equal(paperTradeHistory(account).completed.length, 0);
+  account = fill(account, "BUY", 2, { price: 120 });
+  account = fillPaperOrder(account, { ...quote, price: 90 }, "SELL", 4, now, undefined, "STOP_LOSS");
+  account = fillPaperOrder(account, { ...quote, price: 90 }, "SELL", 4, now, undefined, "STOP_LOSS");
+  account = fill(account, "BUY", 1);
+  account = fill(account, "SELL", 1);
+  delete account.fills.at(-1).reason;
+  const restored = paperAccountSchema.parse(JSON.parse(JSON.stringify(account)));
+  const [combined, legacy] = paperTradeHistory(restored).completed;
+  assert.equal(combined.outcomeReason,
+    "Sold below entry (Rs103.33 -> Rs96.67). Exits: target hit, stop-loss triggered.");
+  assert.equal(legacy.outcomeReason,
+    "Average exit matched entry (Rs100.00 -> Rs100.00). Exits: exit trigger not recorded.");
 });

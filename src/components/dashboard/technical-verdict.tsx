@@ -11,6 +11,8 @@ import { EntryTiming } from "./entry-timing";
 import { calculateEntryTiming } from "../../lib/market/entry-timing";
 import { FifteenMinuteOutlook } from "./fifteen-minute-outlook";
 import type { FifteenMinuteHistory } from "../../lib/market/fifteen-minute-outlook";
+import { VerdictDuration } from "./verdict-duration";
+import { verdictTimingContext } from "../../lib/market/verdict-duration";
 
 export function TechnicalVerdict({ data, mode, forecastData, forecastHistory, forecastLoading, forecastError, onSessionExpired }: {
   data: MarketAnalysis; mode: AnalysisMode; onSessionExpired: () => void;
@@ -41,6 +43,7 @@ export function TechnicalVerdict({ data, mode, forecastData, forecastHistory, fo
         <p className="mt-1">Signal: <span className="font-semibold text-foreground">{verdict.decision}</span></p>
       </div>
     </div>
+    <VerdictDuration kind="technical" context={verdictTimingContext(data, mode)} decision={verdict.dataReady ? verdict.decision : null} />
     <p role="status" className="mt-3 text-xs leading-relaxed">{verdict.exitOnly
       ? "Bearish setup: exit an existing long or avoid entry. Do not open a new short."
       : action === "WAIT" && verdict.decision !== "HOLD"

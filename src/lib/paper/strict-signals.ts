@@ -1,6 +1,7 @@
 import { loadMarketAnalysis } from "../groww/analysis.ts";
 import { calculateEntryTiming } from "../market/entry-timing.ts";
 import { calculateIndicators } from "../market/indicators.ts";
+import { closedSessionCandles } from "../market/closed-candles.ts";
 import { intradayEntryCutoff, regularMarketSession } from "../market/market-session.ts";
 import { PaperTradingError } from "../market/paper-trading.ts";
 import { assessMarketDepth, calculatePriceActionConfluence } from "../market/price-action-confluence.ts";
@@ -47,16 +48,8 @@ export const paperSignalChecks = {
       bar.time * 1000 > 8_640_000_000_000_000 - 86_400_000)) {
       deny(["Candle timestamps are invalid; closed-session evidence cannot be verified."]);
     }
-    const candles = loaded.candles.filter((bar) => {
-      const start = bar.time * 1000;
-      const barSession = regularMarketSession(start);
-      if (interval === "1day") {
-        return barSession.phase !== "weekend" && barSession.date < session.date &&
-          barSession.closesAt <= Math.min(now, snapshotAt);
-      }
-      return barSession.phase === "open" && (start - barSession.opensAt) % 900_000 === 0 &&
-        start + 900_000 <= Math.min(now, snapshotAt, barSession.closesAt);
-    });
+    const candles = closedSessionCandles(loaded.candles, interval, Math.min(now, snapshotAt))
+      .filter(bar => interval !== "1day" || regularMarketSession(bar.time * 1000).date < session.date);
     const reasons: string[] = [];
     if (candles.length < 50) {
       reasons.push("At least 50 CLOSED regular-session candles are required; forming, future and off-session bars do not count.");

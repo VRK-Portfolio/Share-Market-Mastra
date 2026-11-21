@@ -3,7 +3,7 @@ import { stockSymbolSchema } from "../groww/instrument-schemas.ts";
 import { intradayEntryCutoff, regularMarketSession } from "./market-session.ts";
 import { activePaperOrder, paperOrderRequestSchema, paperOrderSchema, paperProtectionSchema } from "./paper-order-schemas.ts";
 import type { PaperProtection } from "./paper-order-schemas.ts";
-import { paperCostModel, paperEstimatedFees, paperExecutionPrice } from "./paper-costs.ts";
+import { paperCharges, paperChargesSchema, paperCostModel, paperExecutionPrice } from "./paper-costs.ts";
 import { paperContractError, paperContractFields, paperIdentityFields, paperPriceKey, paperSegment, validPaperInstrument, validPaperProduct } from "./paper-instruments.ts";
 import type { FnoInstrument } from "../groww/instrument-schemas.ts";
 
@@ -25,8 +25,12 @@ const fillSchema = z.object({
   price: positiveInteger, at: z.number().int().positive(), quoteTime: z.number().int().positive(), realized: integer.int(),
   reason: z.enum(["MARKET", "LIMIT", "GTT", "TARGET", "STOP_LOSS", "SQUARE_OFF"]).optional(),
   fees: integer.int().nonnegative().default(0),
-  costModel: z.literal("ESTIMATED_V1").optional(),
-}).refine(validPaperInstrument, "Invalid saved paper contract or lot quantity.");
+  costModel: z.enum(["ESTIMATED_V1", "INDIA_FLAT20_V2"]).optional(),
+  charges: paperChargesSchema.optional(),
+}).refine(validPaperInstrument, "Invalid saved paper contract or lot quantity.")
+  .refine(fill => fill.costModel === "INDIA_FLAT20_V2"
+    ? !!fill.charges && fill.charges.total === fill.fees : fill.charges === undefined,
+  "Saved paper charges do not match the cost model or fill fees.");
 export const paperAccountSchema = z.object({
   version: z.union([z.literal(1), z.literal(2)]).transform(() => 2 as const),
   initialBalance: z.literal(10_000_000), cash: integer.int(), realized: integer.int(),
@@ -129,7 +133,6 @@ export function fillPaperOrder(
     symbol: quote.symbol, exchange: quote.exchange, product: quote.product, id, side, quantity,
     ...(quote.segment === "FNO" ? { segment: "FNO", instrument: quote.instrument } : {}),
     price: Math.round(fillPrice * 100), at: now, quoteTime: quote.tradeTime, realized: 0, reason,
-    ...(options.costAware ? { costModel: paperCostModel.id } : {}),
   });
   const key = positionKey(order);
   const existing = account.positions.find((position) => positionKey(position) === key);
@@ -146,9 +149,12 @@ export function fillPaperOrder(
     throw new PaperTradingError("This intraday position is overdue. Close it before adding a new position.");
   }
   const requiredMargin = closing ? 0 : paperRequiredMargin(quote.product, notional, quote.segment);
-  order.fees = options.costAware ? paperEstimatedFees(notional) : 0;
+  if (options.costAware) {
+    order.charges = paperCharges(notional, quote, side);
+    order.fees = order.charges.total;
+    order.costModel = paperCostModel.id;
+  }
   if (!closing && requiredMargin + order.fees > account.cash) throw new PaperTradingError("Insufficient virtual cash for collateral and estimated fees. CASH MIS reserves 20%; CNC and all F&O entries require full notional/premium.");
-  if (!closing && options.costAware && !options.protection) throw new PaperTradingError("New paper entries require a stop-loss and target.");
   const protection = !closing && options.protection ? {
     targetPrice: Math.round(options.protection.targetPrice * 100), stopPrice: Math.round(options.protection.stopPrice * 100),
   } : null;

@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { instrumentSearchResponseSchema } from "../../lib/groww/instrument-schemas";
 import type { FnoInstrument } from "../../lib/groww/instrument-schemas";
 import { money } from "./format";
+import { IndexOptionGuide } from "./index-option-guide";
 
 export function FnoContractPicker({ exchange, selected, onSelect, onSessionExpired }: {
   exchange: "NSE" | "BSE";
@@ -13,9 +14,18 @@ export function FnoContractPicker({ exchange, selected, onSelect, onSessionExpir
 }) {
   const id = useId();
   const list = useRef<HTMLUListElement>(null);
+  const guide = useRef<HTMLDivElement>(null);
+  const guideButton = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [filters, setFilters] = useState({ q: selected?.tradingSymbol ?? "", type: "ALL", expiry: "", strike: "", page: 1 });
+  const selectedSymbol = selected?.growwSymbol ?? null;
+  const [selectionSource, setSelectionSource] = useState(selectedSymbol);
+  if (selectionSource !== selectedSymbol) {
+    setSelectionSource(selectedSymbol);
+    if (selected) setFilters({ q: selected.tradingSymbol, type: "ALL", expiry: "", strike: "", page: 1 });
+  }
   const [result, setResult] = useState<{
     key: string; data?: ReturnType<typeof instrumentSearchResponseSchema.parse>; error?: string;
   } | null>(null);
@@ -27,6 +37,15 @@ export function FnoContractPicker({ exchange, selected, onSelect, onSessionExpir
   const matches = current?.data?.instruments;
   const expanded = open && q.length >= 2;
   const activeIndex = Math.min(active, Math.max(0, (matches?.length ?? 0) - 1));
+
+  useEffect(() => {
+    if (!guideOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !guide.current?.contains(event.target)) setGuideOpen(false);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [guideOpen]);
 
   useEffect(() => {
     if (!open || q.length < 2) return;
@@ -69,14 +88,31 @@ export function FnoContractPicker({ exchange, selected, onSelect, onSessionExpir
     const instrument = matches?.[index];
     if (!instrument) return;
     setFilters((current) => ({ ...current, q: instrument.tradingSymbol, page: 1 }));
+    setSelectionSource(instrument.growwSymbol);
     setOpen(false);
+    setGuideOpen(false);
     setActive(0);
     onSelect(instrument);
   }
 
   return (
-    <div className="field-label min-w-40 flex-1 sm:max-w-72"
+    <div className="field-label min-w-0 flex-1 sm:max-w-md"
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
+      <div ref={guide} className="relative mb-3"
+        onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setGuideOpen(false); }}
+        onKeyDown={event => {
+          if (event.key === "Escape" && guideOpen) {
+            event.preventDefault(); setGuideOpen(false); guideButton.current?.focus();
+          }
+        }}>
+      <button ref={guideButton} type="button" aria-expanded={guideOpen} aria-controls={`${id}-guide`} className="secondary-button w-full text-xs"
+        onClick={() => { setOpen(false); setGuideOpen(value => !value); }}>{guideOpen ? "Hide option guide" : "Find stock / index options near spot"}</button>
+      {guideOpen && <div id={`${id}-guide`} className="absolute left-0 right-0 top-full z-40 mt-1 max-h-[70vh] overflow-y-auto overscroll-contain rounded-xl border border-line bg-panel p-3 text-foreground shadow-xl"><IndexOptionGuide key={exchange} exchange={exchange} selected={selected}
+        onSessionExpired={onSessionExpired} onSelect={instrument => {
+          setFilters({ q: instrument?.tradingSymbol ?? "", type: "ALL", expiry: "", strike: "", page: 1 });
+          setOpen(false); setActive(0); onSelect(instrument);
+        }} /></div>}
+      </div>
       <label htmlFor={id}>Selected contract</label>
       <div className="relative mt-2">
         <input id={id} role="combobox" aria-label="Selected contract" aria-autocomplete="list"

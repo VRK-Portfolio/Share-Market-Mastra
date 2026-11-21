@@ -6,7 +6,7 @@ import type { FeedSelection, LiveTick } from "../../lib/groww/live-schemas";
 import { livePriceKey } from "../../lib/market/live-prices";
 import type { ObservedPrice } from "../../lib/market/live-prices";
 
-export function useInstrumentPrices(instruments: FeedSelection[], connected: boolean, onSessionExpired: () => void) {
+export function useInstrumentPrices(instruments: FeedSelection[], connected: boolean, onSessionExpired: () => void, publishIntervalMs = 0) {
   const [revision, setRevision] = useState(0);
   const selections = [...new Map(instruments.map((item) => [livePriceKey(item), item])).values()]
     .sort((a, b) => livePriceKey(a).localeCompare(livePriceKey(b)));
@@ -20,6 +20,23 @@ export function useInstrumentPrices(instruments: FeedSelection[], connected: boo
     const stocks: FeedSelection[] = JSON.parse(key);
     if (!stocks.length) return;
     const controller = new AbortController();
+    const pending: Record<string, ObservedPrice> = {};
+    function publish(prices: Record<string, ObservedPrice>) {
+      setResult(previous => {
+        if (previous?.key !== key) return previous;
+        const next = { ...previous.prices };
+        for (const [identity, tick] of Object.entries(prices)) {
+          if ((next[identity]?.tradeTime ?? 0) <= tick.tradeTime) next[identity] = tick;
+        }
+        return { ...previous, prices: next };
+      });
+    }
+    const publisher = publishIntervalMs > 0 ? setInterval(() => {
+      if (!Object.keys(pending).length) return;
+      const batch = { ...pending };
+      for (const identity of Object.keys(pending)) delete pending[identity];
+      publish(batch);
+    }, publishIntervalMs) : undefined;
     async function connect(group: typeof stocks, groupId: string) {
       const identities = new Set(group.map(livePriceKey));
       try {
@@ -42,7 +59,7 @@ export function useInstrumentPrices(instruments: FeedSelection[], connected: boo
           while (!controller.signal.aborted) {
             const chunk = await reader.read();
             if (controller.signal.aborted) return;
-            if (chunk.done) throw new Error("Live instrument prices disconnected. Reconnect live P&L.");
+            if (chunk.done) throw new Error("Live instrument prices disconnected. Reconnect the price feed.");
             for (const event of decoder.push(text.decode(chunk.value, { stream: true }))) {
               const identity = livePriceKey(event);
               if (!identities.has(identity)) throw new Error("The live price stream returned an unexpected instrument.");
@@ -53,10 +70,10 @@ export function useInstrumentPrices(instruments: FeedSelection[], connected: boo
               if (event.type !== "tick") continue;
               const tick: LiveTick = event;
               const observedAt = Date.now();
-              setResult((previous) => {
-                if (previous?.key !== key || (previous.prices[identity]?.tradeTime ?? 0) > tick.tradeTime) return previous;
-                return { ...previous, prices: { ...previous.prices, [identity]: { ...tick, observedAt } } };
-              });
+              const observed = { ...tick, observedAt };
+              if (publishIntervalMs > 0) {
+                if ((pending[identity]?.tradeTime ?? 0) <= tick.tradeTime) pending[identity] = observed;
+              } else publish({ [identity]: observed });
             }
           }
         } finally {
@@ -65,6 +82,7 @@ export function useInstrumentPrices(instruments: FeedSelection[], connected: boo
         }
       } catch (error) {
         if (controller.signal.aborted) return;
+        for (const identity of identities) delete pending[identity];
         setResult((previous) => previous?.key !== key ? previous : {
           ...previous,
           prices: Object.fromEntries(Object.entries(previous.prices).filter(([identity]) => !identities.has(identity))),
@@ -76,8 +94,8 @@ export function useInstrumentPrices(instruments: FeedSelection[], connected: boo
       setResult({ key, prices: {}, errors: {} });
       for (let offset = 0; offset < stocks.length; offset += 50) void connect(stocks.slice(offset, offset + 50), String(offset));
     }, 0);
-    return () => { clearTimeout(timer); controller.abort(); };
-  }, [key, connected, onSessionExpired, revision]);
+    return () => { clearTimeout(timer); if (publisher) clearInterval(publisher); controller.abort(); };
+  }, [key, connected, onSessionExpired, revision, publishIntervalMs]);
 
   const current = connected && result?.key === key ? result : null;
   return {

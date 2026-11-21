@@ -5,6 +5,7 @@ import { paperTradeHistory } from "../../lib/market/paper-history";
 import { PaperTradingError } from "../../lib/market/paper-trading";
 import type { PaperAccount } from "../../lib/market/paper-trading";
 import { money } from "./format";
+import { PaperChargeBreakdown } from "./paper-charge-breakdown";
 
 const time = (at: number) => `${new Date(at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST`;
 const outcome = (pnl: number) => pnl > 0 ? "Profit" : pnl < 0 ? "Loss" : "Break-even";
@@ -61,7 +62,7 @@ export const PaperOrderHistory = memo(function PaperOrderHistory({ account, segm
           <div className="flex flex-wrap gap-x-1.5"><dt className="text-muted">Break-even</dt><dd className="font-mono font-semibold">{history.breakEven}</dd></div>
         </dl>
       </div>
-      <p className="mt-2 text-muted">Saved results include modeled fees only where recorded; legacy fills remain cost-free. Mixed cycles are only partially cost-modeled. <a href="/risk" className="text-accent underline">Compare cost cohorts &amp; net expectancy</a>.</p>
+      <p className="mt-2 text-muted">Saved results include modeled fees only where recorded; legacy fills remain cost-free. Mixed cycles combine different schedules and may include cost-free fills. <a href="/risk" className="text-accent underline">Compare cost cohorts &amp; net expectancy</a>.</p>
       {history.partialRealized !== 0 && <p className="mt-2 text-muted">Open-cycle realized P&amp;L (partial exits and entry fees): {money(history.partialRealized / 100)}. Not scored yet.</p>}
       <details className="mt-3 text-[11px] text-muted">
         <summary className="cursor-pointer">How the score works (not a forecast)</summary>
@@ -70,6 +71,36 @@ export const PaperOrderHistory = memo(function PaperOrderHistory({ account, segm
         Open positions and unfilled/cancelled orders do not count. All {segment ?? "account"} trades, exchanges and products since the last account reset are included.
         This is observed paper performance, not a future success probability. New modeled fills include estimated fees and slippage; legacy history is unchanged. Win rate alone does not measure expectancy.</p>
       </details>
+      <section className="mt-4 rounded-xl border border-line p-3" aria-label="Daily paper profit and loss">
+        <h4 className="text-sm font-semibold">Date-wise profit &amp; loss</h4>
+        <p className="mt-1 text-[11px] text-muted">IST fill dates, newest first. Positive and negative net fill results include recorded fees, entry costs and partial exits. Open unrealized P&amp;L is excluded. Covers all {segment === "FNO" ? "F&O" : segment === "CASH" ? "stock" : "account"} fills, regardless of the search below.</p>
+        {history.daily.length ? <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-left text-[11px]">
+            <caption className="sr-only">Realized paper profit and loss by IST execution date</caption>
+            <thead className="text-muted">
+              <tr>
+                <th scope="col" className="pb-2 pr-3 font-medium">Date (IST)</th>
+                <th scope="col" className="pb-2 px-2 text-right font-medium">Profit</th>
+                <th scope="col" className="pb-2 px-2 text-right font-medium">Loss</th>
+                <th scope="col" className="pb-2 pl-2 text-right font-medium">Net P&amp;L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.daily.map(day => <tr key={day.date} className="border-t border-line">
+                <th scope="row" className="whitespace-nowrap py-2 pr-3 font-normal">
+                  <time dateTime={day.date}>{new Date(`${day.date}T00:00:00+05:30`).toLocaleDateString("en-IN", {
+                    timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric",
+                  })}</time>
+                  <span className="mt-1 block text-[10px] text-muted">{day.fills} {day.fills === 1 ? "fill" : "fills"}</span>
+                </th>
+                <td className="whitespace-nowrap px-2 py-2 text-right font-mono text-positive">{money(day.profit / 100)}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-right font-mono text-negative">{money(day.loss / 100)}</td>
+                <td className={`whitespace-nowrap py-2 pl-2 text-right font-mono font-semibold ${pnlColor(day.netRealized)}`}>{money(day.netRealized / 100)}</td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div> : <p className="mt-3 text-muted">No executed fills yet. Daily results appear after your first paper fill.</p>}
+      </section>
       <label className="mt-4 block text-[11px] text-muted">Find a trade
         <input type="search" className="field mt-1 w-full" aria-label="Search paper history" placeholder={`Search symbol, exchange or MIS / ${segment === "FNO" ? "NRML" : "CNC"}`}
           value={search} onChange={(event) => setSearch(event.target.value)} />
@@ -79,7 +110,7 @@ export const PaperOrderHistory = memo(function PaperOrderHistory({ account, segm
         <button type="button" className="paper-history-switch" aria-pressed={view === "fills"} onClick={() => setView("fills")}>All fills ({history.rows.length})</button>
       </div>
       <div hidden={view !== "completed"}>
-        <p className="mt-3 text-[11px] text-muted">One card per fully closed position. Select a card for the full breakdown.{query && ` ${completed.length} matching trades; score above still covers all trades.`}</p>
+        <p className="mt-3 text-[11px] text-muted">One card per fully closed position. Reasons use saved fill prices, exit triggers and fees, not a verified cause of market moves. Select a card for the full breakdown.{query && ` ${completed.length} matching trades; score above still covers all trades.`}</p>
         <ol className="mt-3 space-y-2" aria-label="Completed paper positions">
           {completed.map((trade) => <li key={trade.id}>
             <details className="paper-history-entry group">
@@ -91,6 +122,7 @@ export const PaperOrderHistory = memo(function PaperOrderHistory({ account, segm
               <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted">
                 <span className="paper-tag">{trade.product}</span><span>{trade.quantity} {trade.segment === "FNO" ? `units / ${trade.quantity / trade.instrument!.lotSize} lots` : "shares"} · {trade.entrySide === "BUY" ? "Long" : "Short"} · {trade.exchange}</span>
               </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-muted"><span className="font-semibold text-foreground">Why {outcome(trade.realized).toLowerCase()}: </span>{trade.outcomeReason}</p>
               <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted">
                 <span>{shortTime(trade.closedAt)} IST</span><span className="text-accent">Details <span aria-hidden="true" className="group-open:hidden">+</span><span aria-hidden="true" className="hidden group-open:inline">-</span></span>
               </div>
@@ -102,9 +134,10 @@ export const PaperOrderHistory = memo(function PaperOrderHistory({ account, segm
               <div><dt className="text-muted">Average exit price</dt><dd>{money(trade.exitValue / trade.quantity / 100)}</dd></div>
               <div><dt className="text-muted">Full entry value</dt><dd>{money(trade.entryValue / 100)}</dd></div>
               <div><dt className="text-muted">Full exit value</dt><dd>{money(trade.exitValue / 100)}</dd></div>
-              <div><dt className="text-muted">Final result</dt><dd className={pnlColor(trade.realized)}>{outcome(trade.realized)}: {money(trade.realized / 100)}</dd></div>
+              <div><dt className="text-muted">Gross P&amp;L before charges</dt><dd>{money((trade.realized + trade.fees) / 100)}</dd></div>
+              <div><dt className="text-muted">Net result after charges</dt><dd className={pnlColor(trade.realized)}>{outcome(trade.realized)}: {money(trade.realized / 100)}</dd></div>
               <div><dt className="text-muted">Saved fees</dt><dd>{money(trade.fees / 100)}</dd></div>
-              <div><dt className="text-muted">Cost model</dt><dd>{trade.costModel === "LEGACY" ? "Legacy · cost-free" : trade.costModel === "MIXED" ? "Mixed · partially cost-modeled" : "Estimated V1 · fees + slippage"}</dd></div>
+              <div><dt className="text-muted">Cost model</dt><dd>{trade.costModel === "LEGACY" ? "Legacy · cost-free" : trade.costModel === "MIXED" ? "Mixed · different cost models" : trade.costModel === "INDIA_FLAT20_V2" ? "India V2 · flat Rs20 + taxes" : "Estimated V1 · fees + slippage"}</dd></div>
             </dl>
             <p className="mt-2 break-words text-muted">Opened {time(trade.openedAt)}. Closed {time(trade.closedAt)}.</p>
             </details>
@@ -139,8 +172,9 @@ export const PaperOrderHistory = memo(function PaperOrderHistory({ account, segm
               <div><dt className="text-muted">Realized result</dt><dd className={role === "EXIT" ? pnlColor(fill.realized) : "text-muted"}>
                 {role === "EXIT" || fill.realized !== 0 ? `${outcome(fill.realized)}: ${money(fill.realized / 100)}` : "Not realized (entry)"}</dd></div>
               <div><dt className="text-muted">Saved fees</dt><dd>{money((fill.fees ?? 0) / 100)}</dd></div>
-              <div><dt className="text-muted">Cost model</dt><dd>{fill.costModel === "ESTIMATED_V1" ? "Estimated V1 · fees + slippage" : "Legacy · cost-free"}</dd></div>
+              <div><dt className="text-muted">Cost model</dt><dd>{fill.costModel === "INDIA_FLAT20_V2" ? "India V2 · flat Rs20 + taxes" : fill.costModel === "ESTIMATED_V1" ? "Estimated V1 · fees + slippage" : "Legacy · cost-free"}</dd></div>
             </dl>
+            {fill.charges && <PaperChargeBreakdown charges={fill.charges} />}
             <p className="mt-2 break-words text-muted">{time(fill.at)}</p>
             <p className="mt-2 text-muted">Entry cost uses the saved cost basis, not a leveraged discount.</p>
             </details>

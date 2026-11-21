@@ -9,6 +9,8 @@ import { Header } from "./header";
 import { money } from "./format";
 import { usePaperTrading } from "./use-paper-trading";
 import { usePaperPrices } from "./use-paper-prices";
+import { PaperChargeBreakdown } from "./paper-charge-breakdown";
+import { paperFeeDisclosure } from "../../lib/market/paper-costs";
 
 const cash = (paise: number | null | undefined) => paise == null ? "Unavailable" : money(paise / 100);
 const score = (value: number | null) => value === null ? "--" : `${value.toFixed(1)} / 100`;
@@ -57,24 +59,24 @@ export function PaperRiskPerformance({ terminalExpiresAt }: { terminalExpiresAt:
         : !account ? <p role="status" className="text-sm text-muted">Loading saved paper account...</p> : <>
         <section className="panel p-5" aria-label="Live paper risk">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="font-semibold">Live marked equity &amp; entry limits</h2>
+            <h2 className="font-semibold">Live marked equity &amp; optional entry guidance</h2>
             <button type="button" className="secondary-button text-xs" disabled={paper.busy} onClick={() => { void paper.refresh(); }}>Refresh paper account</button>
           </div>
-          <p className="mt-2 text-xs text-muted">Account refreshes manually and on focus only; prices stream independently. Last account sync: {paper.syncedAt ? `${new Date(paper.syncedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST` : "pending"}. Missing or stale marks block new entries.</p>
+          <p className="mt-2 text-xs text-muted">Account refreshes manually and on focus only; prices stream independently. Last account sync: {paper.syncedAt ? `${new Date(paper.syncedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST` : "pending"}. Risk and strategy guidelines are informational only. Missing account marks make guidance incomplete, not entry-blocking.</p>
           <dl className="paper-metrics mt-5 grid-cols-2 gap-5 md:grid-cols-4">
             <div><dt>Live paper equity</dt><dd>{cash(risk?.equity)}</dd></div>
-            <div><dt>Per-trade loss budget · 0.5%</dt><dd>{cash(risk?.equity == null ? null : risk.equity * 0.005)}</dd></div>
+            <div><dt>Per-trade guideline · 0.5%</dt><dd>{cash(risk?.equity == null ? null : risk.equity * 0.005)}</dd></div>
             <div><dt>Combined open + pending risk</dt><dd>{cash(risk?.openRisk)}</dd></div>
-            <div><dt>Open-risk limit · 2%</dt><dd>{cash(risk?.equity == null ? null : risk.equity * 0.02)}</dd></div>
+            <div><dt>Open-risk guideline · 2%</dt><dd>{cash(risk?.equity == null ? null : risk.equity * 0.02)}</dd></div>
             <div><dt>Daily consumed loss budget</dt><dd>{cash(risk?.dailyLoss)}</dd></div>
-            <div><dt>Daily loss limit · 1.5%</dt><dd>{cash(risk?.dailyLimit)}</dd></div>
-            <div><dt>Per-stock gross limit · 20%</dt><dd>{cash(risk?.equity == null ? null : risk.equity * 0.20)}</dd></div>
+            <div><dt>Daily loss guideline · 1.5%</dt><dd>{cash(risk?.dailyLimit)}</dd></div>
+            <div><dt>Per-stock gross guideline · 20%</dt><dd>{cash(risk?.equity == null ? null : risk.equity * 0.20)}</dd></div>
             <div><dt>Unprotected positions</dt><dd className={risk?.unprotected ? "text-warning" : ""}>{risk?.unprotected ?? "--"}</dd></div>
           </dl>
           <p className="mt-4 text-xs text-muted">{risk?.freshPrices ?? 0}/{risk?.positions ?? account.positions.length} positions with fresh marks. Pending planned risk: {cash(risk?.pendingRisk)}. Limits use gross exposure, not the leveraged cash margin.</p>
-          <p className="mt-3 text-xs leading-relaxed text-muted">Conservative daily budget, not close-to-close return: today&apos;s negative net fill outcomes plus current unrealized losses, including carried positions. Profits do not replenish it. The limit is 1.5% of start-of-day book equity (initial balance + realized P&amp;L before today). Once detected by the server, a halt stays locked for that IST date. Missing marks make the displayed consumed budget incomplete and block entries.</p>
-          <p className={`mt-3 text-sm font-medium ${risk?.dailyLocked ? "text-negative" : "text-muted"}`}>{risk?.dailyLocked ? "Daily entry lock active; closing/reducing remains allowed." : "No daily lock reported in this account snapshot; server revalidates every entry."}</p>
-          {!!risk?.blockers.length && <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-warning">{risk.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>}
+          <p className="mt-3 text-xs leading-relaxed text-muted">Conservative daily guidance, not close-to-close return: today&apos;s negative net fill outcomes plus current unrealized losses, including carried positions. Profits do not replenish it. The reference is 1.5% of start-of-day book equity (initial balance + realized P&amp;L before today). Reaching it does not lock entries. Missing marks make the displayed consumed budget incomplete. Older saved halt dates are not enforced.</p>
+          <p className={`mt-3 text-sm font-medium ${risk?.dailyLocked ? "text-warning" : "text-muted"}`}>{risk?.dailyLocked ? "Daily loss guideline reached (information only); entries remain available." : "No daily loss guideline breach reported. No daily entry lock is enforced."}</p>
+          {!!risk?.blockers.length && <ul aria-label="Informational risk warnings" className="mt-3 list-disc space-y-1 pl-5 text-xs text-warning">{risk.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>}
         </section>
         {performance && <section className="panel p-5" aria-label="Observed paper performance">
           <h2 className="font-semibold">Observed trade performance · not a forecast</h2>
@@ -100,17 +102,21 @@ export function PaperRiskPerformance({ terminalExpiresAt }: { terminalExpiresAt:
               <thead className="text-muted"><tr><th className="p-2">Cost basis</th><th className="p-2">Cycles</th><th className="p-2">Win score</th><th className="p-2">Expectancy</th><th className="p-2">Net P&amp;L</th></tr></thead>
               <tbody>{([
                 ["Legacy · no modeled costs", performance.cohorts.legacy],
-                ["Estimated V1 · all fills modeled", performance.cohorts.modeled],
-                ["Mixed · legacy + modeled fills", performance.cohorts.mixed],
+                ["Estimated V1 · 0.10% fees", performance.cohorts.modeled],
+                ["India V2 · flat Rs20 + taxes", performance.cohorts.itemized],
+                ["Mixed · different cost models", performance.cohorts.mixed],
               ] as const).map(([label, cohort]) => <tr key={label} className="border-t border-line"><th scope="row" className="p-2 font-normal">{label}</th><td className="p-2">{cohort.sampleSize}</td><td className="p-2">{score(cohort.score)}</td><td className="p-2">{cash(cohort.expectancy)}</td><td className="p-2">{cash(cohort.netRealized)}</td></tr>)}</tbody>
             </table>
           </div>
-          <p className="mt-3 text-xs leading-relaxed text-muted">{performance.legacyFills} legacy cost-free fills; {performance.modeledFills} Estimated V1 fills. Future paper fills estimate fees of 0.10% of turnover and adverse slippage of 0.05% on each fill, on both entry and exit. Old history is never backfilled with hypothetical charges. Mixed cycles retain their original legacy portions, so their results are only partially cost-modeled. These are estimates, not actual broker charges.</p>
+          <h3 className="mt-5 text-sm font-semibold">Saved V2 brokerage &amp; tax totals · all fills</h3>
+          <PaperChargeBreakdown charges={performance.itemizedCharges} />
+          <p className="mt-3 text-xs leading-relaxed text-muted">{performance.legacyFills} legacy cost-free fills; {performance.modeledFills} Estimated V1 fills; {performance.itemizedFills} itemized V2 fills. The breakdown covers V2 only; total saved fees above also include V1. Old history is never recalculated. Mixed cycles combine different schedules and may include cost-free fills. New fills retain 0.05% adverse slippage.</p>
+          <p className="mt-3 text-xs leading-relaxed text-muted">{paperFeeDisclosure}</p>
         </section>}
       </>}
       <section className="panel p-5 text-xs leading-relaxed text-muted">
         <h2 className="text-sm font-semibold text-foreground">Entry policy &amp; missing context</h2>
-        <p className="mt-2">Stocks and F&amp;O share this balance and all risk limits. New entries require stop + target, closed-candle technical agreement and fresh market depth. CASH MIS also requires timing and opening-range/volume checks; CASH-only confluence is not used for F&amp;O. Futures reserve full notional and bought options full premium, even for MIS; option sells are exit-only. Reducing/closing orders bypass entry approval. Existing protection is retained/resized after quantity changes.</p>
+        <p className="mt-2">Stocks and F&amp;O share this balance and advisory risk figures. Target/stop protection is optional. Risk caps, daily loss, indicator agreement, depth, timing and opening-range/volume checks do not gate paper entries. Strategy history/depth is not fetched for order approval. Fresh execution prices, valid contracts/lots/ticks, sufficient funds, regular-session hours and the 15:20 MIS square-off cutoff remain enforced. Futures reserve full notional and bought options full premium, even for MIS; option sells are exit-only. Existing protection is retained/resized after quantity changes.</p>
         <p className="mt-2">Sector, news and market-breadth integrations are not present; these contexts are unknown, not positive confirmations. Technical checks cannot guarantee profitability. Live broker execution is unchanged by paper risk and cost safeguards.</p>
       </section>
     </main>
