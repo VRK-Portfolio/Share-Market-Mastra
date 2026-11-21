@@ -7,6 +7,9 @@ import { orderInstrumentSchema } from "./order-schemas.ts";
 import { indexInstrumentSchema } from "./benchmark-schemas.ts";
 import { feedSelectionSchema } from "./live-schemas.ts";
 import type { PortfolioInstrumentSelection } from "./portfolio-instrument-schemas.ts";
+import { optionUnderlyingInstrumentSchema } from "./option-analytics-schemas.ts";
+
+export const optionIndexAliases: Record<string, string> = { MIDCPNIFTY: "NIFTYMIDSELECT", NIFTYNXT50: "NIFTYJR" };
 
 const decimal = z.string().regex(/^\d+(?:\.\d+)?$/).transform(Number).pipe(z.number().finite());
 const strike = z.string().regex(/^-?\d+(?:\.\d+)?$/).transform(Number).pipe(z.number().finite());
@@ -110,6 +113,44 @@ async function getCatalog(signal: AbortSignal): Promise<Catalog> {
 
 export async function getFnoInstruments(signal: AbortSignal): Promise<FnoInstrument[]> {
   return (await getCatalog(signal)).instruments;
+}
+
+function optionUnderlyingRows(records: Catalog["records"], exchange: "NSE" | "BSE") {
+  const rows = new Map<string, Map<string, Catalog["records"][number]>>();
+  for (const row of records) {
+    if (row.exchange !== exchange || row.segment !== "CASH" || !["EQ", "IDX"].includes(row.instrument_type)) continue;
+    const matches = rows.get(row.trading_symbol) ?? new Map<string, Catalog["records"][number]>();
+    matches.set(row.groww_symbol, row);
+    rows.set(row.trading_symbol, matches);
+  }
+  return rows;
+}
+
+function resolveOptionUnderlying(rows: ReturnType<typeof optionUnderlyingRows>, underlying: string) {
+  const matches = rows.get(optionIndexAliases[underlying] ?? underlying);
+  if (matches?.size !== 1) return null;
+  const row = [...matches.values()][0];
+  return optionUnderlyingInstrumentSchema.parse({
+    exchange: row.exchange, tradingSymbol: row.trading_symbol, growwSymbol: row.groww_symbol,
+    name: row.name?.trim() || null, instrumentType: row.instrument_type,
+  });
+}
+
+export async function getOptionUnderlyingInstrument(contract: FnoInstrument, signal: AbortSignal) {
+  return resolveOptionUnderlying(optionUnderlyingRows((await getCatalog(signal)).records, contract.exchange), contract.underlying);
+}
+
+export async function getOptionGuideUnderlyings(exchange: "NSE" | "BSE", signal: AbortSignal) {
+  const catalog = await getCatalog(signal);
+  const rows = optionUnderlyingRows(catalog.records, exchange);
+  const underlyings = new Set(catalog.instruments.filter(item => item.exchange === exchange &&
+    item.expiry >= currentIstDate() && item.instrumentType !== "FUT").map(item => item.underlying));
+  return [...underlyings].flatMap(underlying => {
+    const index = resolveOptionUnderlying(rows, underlying);
+    return index ? [{ underlying, index }] : [];
+  }).sort((a, b) => Number(b.underlying === "NIFTY") - Number(a.underlying === "NIFTY") ||
+    Number(b.index.instrumentType === "IDX") - Number(a.index.instrumentType === "IDX") ||
+    a.underlying.localeCompare(b.underlying));
 }
 
 export async function getIndexInstruments(exchange: "NSE" | "BSE", signal: AbortSignal) {

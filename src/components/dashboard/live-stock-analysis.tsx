@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { marketAnalysisSchema, stockSymbolSchema } from "../../lib/groww/market-schemas";
 import type { AnalysisMode, Interval, MarketAnalysis, MarketSegment } from "../../lib/market/types";
 import type { FnoInstrument } from "../../lib/groww/instrument-schemas";
+import { instrumentSearchResponseSchema } from "../../lib/groww/instrument-schemas";
 import { IndicatorPanel } from "./indicator-panel";
 import { MarketContext } from "./market-context";
 import { PriceChart } from "./price-chart";
@@ -14,28 +15,35 @@ import { applyLiveTick } from "../../lib/groww/live-schemas";
 import { TechnicalVerdict } from "./technical-verdict";
 import { buildFifteenMinuteHistory } from "../../lib/market/fifteen-minute-outlook";
 import { PriceActionConfluence } from "./price-action-confluence";
+import { analysisLinkUrl } from "../../lib/market/analysis-link";
+import type { AnalysisLink } from "../../lib/market/analysis-link";
+import { OptionAnalytics } from "./option-analytics";
 
 type SearchResult =
   | { key: string; data: MarketAnalysis; error?: never }
   | { key: string; error: string; retryAfterSeconds?: number; data?: never };
 
-export function LiveStockAnalysis({ onSessionExpired, segment }: {
+export function LiveStockAnalysis({ onSessionExpired, segment, initialSelection, onFnoSelectionChange }: {
   onSessionExpired: () => void;
   segment: MarketSegment;
+  initialSelection?: AnalysisLink;
+  onFnoSelectionChange?: (instrument: FnoInstrument | null, product: "MIS" | "NRML") => void;
 }) {
-  const [cashSymbol, setSymbol] = useState("");
+  const [cashSymbol, setSymbol] = useState(initialSelection?.segment === "CASH" ? initialSelection.symbol : "");
   const [contract, setContract] = useState<FnoInstrument | null>(null);
-  const symbol = segment === "CASH" ? cashSymbol : contract?.tradingSymbol ?? "";
-  const [exchange, setExchange] = useState<"NSE" | "BSE">("NSE");
-  const [interval, setInterval] = useState<Interval>("15minute");
-  const [mode, setMode] = useState<AnalysisMode>("MIS");
+  const [pendingContract, setPendingContract] = useState(initialSelection?.segment === "FNO" ? initialSelection.symbol : "");
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const symbol = segment === "CASH" ? cashSymbol : contract?.tradingSymbol ?? pendingContract;
+  const [exchange, setExchange] = useState<"NSE" | "BSE">(initialSelection?.exchange ?? "NSE");
+  const [interval, setInterval] = useState<Interval>(initialSelection?.mode === "CNC" ? "1day" : "15minute");
+  const [mode, setMode] = useState<AnalysisMode>(initialSelection?.mode ?? "MIS");
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<SearchResult | null>(null);
   const [forecastResult, setForecastResult] = useState<SearchResult | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshStatus, setRefreshStatus] = useState<{ key: string; refreshing: boolean; error?: string } | null>(null);
   const normalized = symbol.trim().toUpperCase();
-  const valid = stockSymbolSchema.safeParse(normalized).success;
+  const valid = stockSymbolSchema.safeParse(normalized).success && (segment === "CASH" || contract !== null);
   const key = JSON.stringify([normalized, exchange, interval, segment, contract?.growwSymbol, revision]);
   const current = result?.key === key ? result : null;
   const data = valid ? current?.data ?? null : null;
@@ -50,6 +58,44 @@ export function LiveStockAnalysis({ onSessionExpired, segment }: {
   const forecastData = forecastSnapshot && live.tick ? applyLiveTick(forecastSnapshot, live.tick) : forecastSnapshot;
   const refreshCurrent = refreshStatus?.key === key ? refreshStatus : null;
   const missingVolumes = data?.candles.filter((candle) => candle.volume === null).length ?? 0;
+  function updateUrl(nextSymbol: string, nextExchange = exchange, nextMode = mode) {
+    const url = analysisLinkUrl(window.location.href, { symbol: nextSymbol, exchange: nextExchange, mode: nextMode, segment });
+    window.history.replaceState(window.history.state, "", url);
+  }
+  function chooseContract(instrument: FnoInstrument | null) {
+    setPendingContract("");
+    setRestoreError(null);
+    setContract(instrument);
+    updateUrl(instrument?.tradingSymbol ?? "");
+    if (segment === "FNO") onFnoSelectionChange?.(instrument, mode === "NRML" ? "NRML" : "MIS");
+  }
+  useEffect(() => {
+    if (segment !== "FNO" || !pendingContract) return;
+    const controller = new AbortController();
+    async function restore() {
+      try {
+        const query = new URLSearchParams({ q: pendingContract, exchange, segment: "FNO" });
+        const response = await fetch(`/api/groww/instruments?${query}`, { cache: "no-store", signal: controller.signal });
+        if (controller.signal.aborted) return;
+        if (response.status === 401) { onSessionExpired(); return; }
+        const body: unknown = await response.json();
+        if (!response.ok) throw new Error(body && typeof body === "object" && "error" in body && typeof body.error === "string"
+          ? body.error : "Unable to restore the linked contract. Retry or select a contract.");
+        const matches = instrumentSearchResponseSchema.parse(body);
+        const instrument = matches.instruments.find(item => item.tradingSymbol === pendingContract && item.exchange === exchange);
+        if (!instrument) throw new Error("The linked contract is missing or expired. Select an available contract from search.");
+        if (controller.signal.aborted) return;
+        setContract(instrument);
+        setPendingContract("");
+        setRestoreError(null);
+        onFnoSelectionChange?.(instrument, mode === "NRML" ? "NRML" : "MIS");
+      } catch (error) {
+        if (!controller.signal.aborted) setRestoreError(error instanceof Error ? error.message : "Unable to restore the linked contract.");
+      }
+    }
+    void restore();
+    return () => controller.abort();
+  }, [pendingContract, exchange, mode, segment, revision, onSessionExpired, onFnoSelectionChange]);
   useEffect(() => {
     if (!valid) return;
     const controller = new AbortController();
@@ -120,14 +166,30 @@ export function LiveStockAnalysis({ onSessionExpired, segment }: {
       <div aria-label="Selected stock analysis">
       <StockOverview
         data={displayData} symbol={symbol} exchange={exchange} mode={mode} loading={loading} segment={segment}
-        contract={contract} onContractChange={setContract}
-        onSymbolChange={(value) => { setSymbol(value); setRevision((current) => current + 1); }}
-        onExchangeChange={(value) => { setExchange(value); setContract(null); setRevision((current) => current + 1); }}
-        onModeChange={setMode}
+        contract={contract} onContractChange={chooseContract}
+        onSymbolChange={(value) => { setSymbol(value); updateUrl(value); setRevision((current) => current + 1); }}
+        onExchangeChange={(value) => {
+          setExchange(value);
+          setPendingContract("");
+          setRestoreError(null);
+          setContract(null);
+          if (segment === "FNO") onFnoSelectionChange?.(null, mode === "NRML" ? "NRML" : "MIS");
+          updateUrl(segment === "CASH" ? cashSymbol : "", value);
+          setRevision((current) => current + 1);
+        }}
+        onModeChange={value => {
+          setMode(value);
+          updateUrl(symbol, exchange, value);
+          if (segment === "FNO") onFnoSelectionChange?.(contract, value === "NRML" ? "NRML" : "MIS");
+        }}
         onRefresh={() => setRevision((value) => value + 1)}
         onSessionExpired={onSessionExpired}
       />
       </div>
+      {pendingContract && (restoreError ? <div className="space-y-2">
+        <p role="alert" className="text-sm text-negative">{restoreError}</p>
+        <button type="button" className="secondary-button text-xs" onClick={() => { setRestoreError(null); setRevision(value => value + 1); }}>Retry linked contract</button>
+      </div> : <p role="status" className="text-sm text-muted">Restoring {pendingContract} from the contract catalog...</p>)}
       {(data || segment === "FNO" && valid) && <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-1 text-[11px]" aria-label="Market data status">
         {data && <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <p role="status" className={live.fresh ? "text-positive" : "text-warning"}>{live.error ? "Feed disconnected · last-known price"
@@ -151,7 +213,7 @@ export function LiveStockAnalysis({ onSessionExpired, segment }: {
         <p className="text-sm font-semibold">Start with one {segment === "CASH" ? "stock" : "contract"}</p>
         <p className="mt-1 text-xs text-muted">Search at least two characters above and choose a result. Price, chart and setup checks will appear here.</p>
       </div>}
-      {normalized && !valid && <p role="alert" className="text-sm text-negative">Enter an exact stock trading symbol such as RELIANCE, TCS or M&amp;M.</p>}
+      {normalized && !valid && !pendingContract && <p role="alert" className="text-sm text-negative">Enter an exact stock trading symbol such as RELIANCE, TCS or M&amp;M.</p>}
       {loading && <p role="status" className="text-sm text-muted">Loading {normalized} quote, candles and indicators...</p>}
       {valid && current?.error && <p role="alert" className="rounded-xl border border-negative/25 bg-negative/5 p-4 text-sm text-negative">{current.error}</p>}
       {(!!data?.omittedCandles || !!missingVolumes) && <details className="rounded-lg border border-warning/25 bg-warning/5 p-3 text-xs text-warning">
@@ -159,6 +221,8 @@ export function LiveStockAnalysis({ onSessionExpired, segment }: {
         <p className="mt-2">Only complete OHLC prices are used; missing prices are not filled. Missing volume is not zero. Price-based indicators remain available, but session VWAP cannot confirm after missing volume until the next IST session.</p>
       </details>}
       {data && !data.candles.length && <p role="status" className="text-xs text-warning">No candle history. The quote is available, but indicators cannot confirm a setup.</p>}
+      {segment === "FNO" && contract && <OptionAnalytics key={JSON.stringify(contract)} instrument={contract}
+        data={displayData} mode={mode} onSessionExpired={onSessionExpired} />}
       {valid && <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(22rem,1fr)]">
       <div className="min-w-0 space-y-3 lg:col-start-2 lg:row-start-1">
       <PriceActionConfluence key={JSON.stringify([normalized, exchange, segment])} data={forecastData} mode={mode}

@@ -1,12 +1,49 @@
+import { z } from "zod";
+import { defaultFeeAssumptions, executionFees, feeNames } from "./trade-calculator.ts";
+import { paperSegment } from "./paper-instruments.ts";
+import type { PaperInstrumentIdentity } from "./paper-instruments.ts";
+
 export const paperCostModel = {
-  id: "ESTIMATED_V1" as const,
-  feeRate: 0.001,
+  id: "INDIA_FLAT20_V2" as const,
+  brokerage: 20,
+  bseIpftPercent: 0.00001,
+  reviewedAt: "2026-11-18",
   slippageRate: 0.0005,
 };
 
-export function paperEstimatedFees(notional: number) {
+const paise = z.number().safe().int().nonnegative();
+export const paperChargesSchema = z.object({
+  brokerage: paise, stt: paise, exchange: paise, ipft: paise,
+  sebi: paise, stampDuty: paise, dp: paise, gst: paise, total: paise,
+}).refine(value => feeNames.reduce((sum, name) => sum + value[name], 0) === value.total,
+  "Paper charge components do not match the total.");
+export type PaperCharges = z.infer<typeof paperChargesSchema>;
+export type PaperFeeSelection = PaperInstrumentIdentity & { product: "MIS" | "CNC" | "NRML" };
+export const paperChargeLabels = {
+  brokerage: "Brokerage", stt: "STT", exchange: "Exchange transaction charge", ipft: "IPF / IPFT",
+  sebi: "SEBI turnover fee", stampDuty: "Stamp duty", dp: "DP charge", gst: "GST (18%)",
+} as const;
+export const paperFeeDisclosure = "Flat Rs20 brokerage per executed BUY and SELL, plus estimated STT, exchange/IPF, SEBI, stamp duty, GST and delivery-sell DP charges. Per-fill rounding can differ from contract notes. BSE uses standard-group transaction rates and modeled IPF of Rs0.01/lakh; actual group/contract charges can differ. Income tax, interest, penalties, exercise and physical settlement are excluded.";
+
+export function paperCharges(notional: number, selection: PaperFeeSelection, side: "BUY" | "SELL"): PaperCharges {
   if (!Number.isSafeInteger(notional) || notional <= 0) throw new Error("Paper fee value cannot be represented safely.");
-  return Math.ceil(notional * paperCostModel.feeRate);
+  const plan = { ...selection, segment: paperSegment(selection), mode: selection.product };
+  const defaults = defaultFeeAssumptions(plan);
+  if (!defaults) throw new Error("Paper charges require a matching exchange, product and verified contract.");
+  const ipftPercent = selection.exchange === "BSE" ? paperCostModel.bseIpftPercent : defaults.ipftPercent;
+  if (ipftPercent === null) throw new Error("The paper IPF/IPFT rate is unavailable for this exchange.");
+  const fees = executionFees(plan, {
+    ...defaults, brokerageOverride: paperCostModel.brokerage,
+    ipftPercent,
+  }, 1, notional / 100, side);
+  return paperChargesSchema.parse({
+    ...Object.fromEntries(feeNames.map(name => [name, Math.round(fees[name] * 100)])),
+    total: Math.round(fees.total * 100),
+  });
+}
+
+export function paperEstimatedFees(notional: number, selection: PaperFeeSelection, side: "BUY" | "SELL") {
+  return paperCharges(notional, selection, side).total;
 }
 
 export function paperExecutionPrice(price: number, side: "BUY" | "SELL", tickSize = 0.01, limitPrice?: number) {
@@ -23,11 +60,11 @@ export function paperExecutionPrice(price: number, side: "BUY" | "SELL", tickSiz
   return capped;
 }
 
-export function paperPlannedRisk(quantity: number, entry: number, stop: number, side: "BUY" | "SELL", tickSize = 0.01) {
+export function paperPlannedRisk(selection: PaperFeeSelection, quantity: number, entry: number, stop: number, side: "BUY" | "SELL", tickSize = 0.01) {
   const exitSide = side === "BUY" ? "SELL" : "BUY";
   const exit = paperExecutionPrice(stop, exitSide, tickSize);
   const notional = Math.round(entry * 100) * quantity;
   const exitNotional = Math.round(exit * 100) * quantity;
   const distance = Math.max(0, (side === "BUY" ? 1 : -1) * (notional - exitNotional));
-  return distance + paperEstimatedFees(notional) + paperEstimatedFees(exitNotional);
+  return distance + paperEstimatedFees(notional, selection, side) + paperEstimatedFees(exitNotional, selection, exitSide);
 }

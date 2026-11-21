@@ -2,6 +2,7 @@ import { z } from "zod";
 import { intervals } from "../market/types.ts";
 import type { MarketAnalysis, Quote } from "../market/types.ts";
 import { fnoInstrumentSchema, stockSymbolSchema } from "./instrument-schemas.ts";
+import { closedSessionCandles } from "../market/closed-candles.ts";
 export { stockSymbolSchema } from "./instrument-schemas.ts";
 
 const number = z.number().finite();
@@ -94,7 +95,7 @@ const candleSchema = z.object({
   candle.low <= Math.min(candle.open, candle.close),
 "Invalid candle price range.");
 
-function candleHistorySchema(fno: boolean) {
+function candleHistorySchema(fno: boolean, scope?: { interval: "15minute" | "1day"; cutoff: number }) {
   const columns = [timestampSchema, price.nullable(), price.nullable(), price.nullable(), price.nullable(), price.nullable()] as const;
   const tuple = fno ? z.tuple([...columns, price.nullish()]).rest(z.unknown()) : z.tuple(columns).rest(z.unknown());
   return z.object({
@@ -108,7 +109,8 @@ function candleHistorySchema(fno: boolean) {
       }))
       .pipe(z.object({ time: number.positive(), candle: candleSchema.nullable() }))),
   }),
-}).transform(({ payload }) => payload.candles.sort((a, b) => a.time - b.time))
+}).transform(({ payload }) => (scope ? closedSessionCandles(payload.candles, scope.interval, scope.cutoff)
+    : payload.candles).sort((a, b) => a.time - b.time))
   .refine((candles) => candles.every((candle, index) => !index || candle.time > candles[index - 1].time),
     "Duplicate candle timestamps.")
   .transform((rows) => {
@@ -118,6 +120,8 @@ function candleHistorySchema(fno: boolean) {
 }
 export const growwCandleHistorySchema = candleHistorySchema(false);
 export const growwFnoCandleHistorySchema = candleHistorySchema(true);
+export const growwClosedCandleHistorySchema = (fno: boolean, interval: "15minute" | "1day", cutoff: number) =>
+  candleHistorySchema(fno, { interval, cutoff });
 
 export const growwCandlesSchema = growwCandleHistorySchema.transform(({ candles }) => candles);
 

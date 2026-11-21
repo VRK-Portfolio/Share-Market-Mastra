@@ -70,14 +70,15 @@ export type CalculatorResult =
     gtt: { quantity: number; entryTrigger: number; entryLimit: number; targetTrigger: number; stopTrigger: number } | null;
     gttReason: string; warnings: string[] };
 
-function planError(plan: CalculatorPlan) {
+type FeePlan = Pick<CalculatorPlan, "symbol" | "exchange" | "segment" | "mode" | "instrument">;
+function planError(plan: FeePlan) {
   if (plan.segment === "CASH") return plan.mode === "NRML" || !!plan.instrument ? "CASH requires MIS/CNC without a derivative contract." : null;
   const contract = fnoInstrumentSchema.safeParse(plan.instrument);
   return plan.mode === "CNC" || !contract.success || contract.data.tradingSymbol !== plan.symbol || contract.data.exchange !== plan.exchange
     ? "A matching, verified F&O contract and MIS/NRML mode are required." : null;
 }
 
-export function defaultFeeAssumptions(plan: CalculatorPlan): FeeAssumptions | null {
+export function defaultFeeAssumptions(plan: FeePlan): FeeAssumptions | null {
   if (planError(plan)) return null;
   const cash = plan.segment === "CASH";
   const delivery = cash && plan.mode === "CNC";
@@ -99,7 +100,7 @@ const paise = (value: number) => Math.round((value + Number.EPSILON) * 100);
 const rupees = (value: number) => value / 100;
 const amount = (value: number) => rupees(paise(value));
 
-function charges(plan: CalculatorPlan, fees: VerifiedFees, quantity: number, unitPrice: number, side: "BUY" | "SELL"): Fees {
+export function executionFees(plan: Pick<CalculatorPlan, "segment" | "mode">, fees: VerifiedFees, quantity: number, unitPrice: number, side: "BUY" | "SELL"): Fees {
   const turnover = amount(quantity * unitPrice);
   const brokerage = fees.brokerageOverride ?? (plan.segment === "FNO" ? 20
     : Math.min(20, Math.max(turnover * 0.001, Math.min(5, turnover * 0.025))));
@@ -147,7 +148,7 @@ export function calculateTradeCosts(plan: CalculatorPlan, rawInput: unknown, raw
   if (exitOnly && (targetPrice !== null || stopLoss !== null)) {
     return { ok: false, error: "Exit-only SELL cannot suggest a new target/stop trade plan." };
   }
-  const exposure = (quantity: number) => paise(quantity * entryPrice) + paise(charges(plan, fees, quantity, entryPrice, side).total);
+  const exposure = (quantity: number) => paise(quantity * entryPrice) + paise(executionFees(plan, fees, quantity, entryPrice, side).total);
   let quantity = input.data.quantity ?? 0;
   if (sizing === "BUDGET") {
     const budget = input.data.budget;
@@ -165,17 +166,17 @@ export function calculateTradeCosts(plan: CalculatorPlan, rawInput: unknown, raw
   }
   if (quantity % lotSize !== 0) return { ok: false, error: `Quantity must be a multiple of the lot size (${lotSize}).` };
   const entryValue = amount(quantity * entryPrice);
-  const entryFees = charges(plan, fees, quantity, entryPrice, side);
+  const entryFees = executionFees(plan, fees, quantity, entryPrice, side);
   const entryExposureWithFees = rupees(exposure(quantity));
   function scenario(exitPrice: number): Scenario {
-    const exitFees = charges(plan, fees, quantity, exitPrice, long ? "SELL" : "BUY");
+    const exitFees = executionFees(plan, fees, quantity, exitPrice, long ? "SELL" : "BUY");
     const grossPnl = amount((exitPrice - entryPrice) * quantity * (long ? 1 : -1));
     const totalFees = amount(entryFees.total + exitFees.total);
     return { exitPrice, exitValue: amount(quantity * exitPrice), exitFees, totalFees, grossPnl, netPnl: amount(grossPnl - totalFees) };
   }
   const target = !exitOnly && targetPrice !== null ? scenario(targetPrice) : null;
   const stop = !exitOnly && stopLoss !== null ? scenario(stopLoss) : null;
-  const exitAtEntryFees = charges(plan, fees, quantity, entryPrice, long ? "SELL" : "BUY");
+  const exitAtEntryFees = executionFees(plan, fees, quantity, entryPrice, long ? "SELL" : "BUY");
   const breakEven = entryPrice + (entryFees.total + exitAtEntryFees.total) / quantity * (long ? 1 : -1);
   const roundedBreakEven = !exitOnly && breakEven > 0
     ? Number(((long ? Math.ceil(breakEven / tick - 1e-9) : Math.floor(breakEven / tick + 1e-9)) * tick).toFixed(8)) : null;

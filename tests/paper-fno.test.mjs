@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { fillPaperOrder, newPaperAccount, paperAccountSchema, paperPositionMark, paperRequiredMargin } from "../src/lib/market/paper-trading.ts";
 import { nextPaperProcessing, placePaperOrder, processPaperOrders } from "../src/lib/market/paper-orders.ts";
 import { paperTradeHistory } from "../src/lib/market/paper-history.ts";
-import { assertPaperEntryRisk, paperRiskReport } from "../src/lib/market/paper-risk.ts";
+import { assertPaperEntryRisk, paperExitSuggestion, paperRiskReport } from "../src/lib/market/paper-risk.ts";
 import { paperPriceKey } from "../src/lib/market/paper-instruments.ts";
 
 const now = Date.parse("2026-11-17T11:30:00+05:30");
@@ -50,6 +50,28 @@ test("options reserve full premium, reject uncovered SELL, support partial lots 
   }
 });
 
+test("open-option exit suggestions use premium levels and respect expiry square-off and unresolved expiry", () => {
+  const option = { ...instrument, instrumentType: "PE", strikePrice: 100,
+    tradingSymbol: "TEST26NOV100PE", expiry: "2026-11-17" };
+  const opened = fill(newPaperAccount(), "BUY", 20,
+    { symbol: option.tradingSymbol, instrument: option, product: "NRML" });
+  const position = opened.positions[0];
+  const optionTick = (price, at) => ({
+    ...tick(quote({ symbol: option.tradingSymbol, price, tradeTime: at })),
+    observedAt: at, receivedAt: new Date(at).toISOString(),
+  });
+  assert.match(paperExitSuggestion(position, opened.orders, optionTick(110, now), now).title, /target reached/);
+  assert.match(paperExitSuggestion(position, opened.orders, optionTick(99, now), now).title, /stop-loss reached/);
+  const cutoff = Date.parse("2026-11-17T15:20:00+05:30");
+  assert.equal(paperExitSuggestion(position, opened.orders, optionTick(105, cutoff - 1), cutoff - 1).action, "HOLD");
+  const due = paperExitSuggestion(position, opened.orders, optionTick(105, cutoff), cutoff);
+  assert.equal(due.action, "EXIT");
+  assert.match(due.reason, /Expiry-day square-off/);
+  const expired = paperExitSuggestion(position, opened.orders, optionTick(105, now + 86_400_000), now + 86_400_000);
+  assert.equal(expired.action, "REVIEW");
+  assert.equal(expired.title, "Expired position needs review");
+});
+
 test("contract lots, ticks, expiry and product validation cannot be bypassed with legacy execution options", () => {
   assert.throws(() => fill(newPaperAccount(), "BUY", 1), /whole-lot/);
   assert.throws(() => fill(newPaperAccount(), "BUY", 10, {}, { targetPrice: 110.01, stopPrice: 99 }), /tick size/);
@@ -79,7 +101,7 @@ test("contract limits reserve full fees and notional, respect price limits and a
     symbol: instrument.tradingSymbol, exchange: "NSE", segment: "FNO", product: "NRML", side: "BUY",
     quantity: 10, kind: "LIMIT", limitPrice: 100, protection: { targetPrice: 110, stopPrice: 99 },
   }, now, randomUUID(), { costAware: true, instrument });
-  assert.equal(pending.orders[0].reservedCash, 100100);
+  assert.equal(pending.orders[0].reservedCash, 102364);
   const filled = processPaperOrders(pending, quote(), now, { costAware: true, tickSize: instrument.tickSize });
   assert.equal(filled.fills[0].price, 10000);
   assert.equal(filled.positions[0].margin, 100000);
@@ -110,6 +132,6 @@ test("risk concentration combines futures and option premium exposure for the sa
   const next = fill(opened, "BUY", 100, { symbol: option.tradingSymbol, instrument: option });
   const prices = { [paperPriceKey(quote())]: tick(quote()),
     [paperPriceKey(quote({ symbol: option.tradingSymbol }))]: tick(quote({ symbol: option.tradingSymbol })) };
-  assert.throws(() => assertPaperEntryRisk(opened, next, { symbol: option.tradingSymbol,
+  assert.throws(() => assertPaperEntryRisk(opened, next, { ...quote({ symbol: option.tradingSymbol, instrument: option }),
     underlying: "TEST", side: "BUY", quantity: 100, price: 100.05, stop: 99, tickSize: 0.05 }, prices, now), /20%/);
 });

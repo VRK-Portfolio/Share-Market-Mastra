@@ -217,6 +217,40 @@ same-day and at most 60 seconds old, rounded to paise, during weekday
 09:15-15:30 IST sessions. Fresh quotes are still required on exchange holidays;
 no holiday calendar is inferred.
 
+The paper form leaves target/stop inputs empty and shows suggested prices below
+each field, 5% either side of the
+reference: BUY/long uses target +5%, stop -5%; permitted short SELL reverses them.
+Market entries use the fresh live price; Limit/GTT use the entered limit.
+Existing-position exit brackets use the fresh live price and the position's
+long/short direction. Values round to paise for CASH or the contract's tick for
+F&O; unavailable references or rounding that cannot produce distinct positive
+levels leave suggestions unavailable with an explanation. Type each price or
+click its adjacent **Use** button to copy that suggestion into its input.
+Both typed and copied prices remain fixed when the reference changes, scoped
+to the instrument, product, direction and entry/exit context. Clearing a field
+leaves it empty. Protection direction must match the intended Paper BUY/SELL
+action; no values are populated automatically on submission. Confirmation
+shows the entered target/stop. These are optional suggestions, not recommended risk levels;
+server-side price, funding, contract and short-selling checks remain enforced.
+Entry target/stop protection is optional: clear **Attach target + stop-loss**
+to submit without new protection. Existing linked exits are retained/resized.
+Risk budgets, daily loss and indicator/depth/timing agreement are informational
+only, not entry requirements. The form shows open-position stop risk, pending-entry risk, the 2% combined guideline
+and remaining budget. Risk-sizing buttons use the smaller of that remaining
+budget and the 0.5% per-trade allowance, including estimated costs and whole
+contract lots; market-entry estimates include adverse entry slippage. When
+adding to a market position, sizing first accounts for replacing protection on
+the existing units. Suggestions remain estimates, not execution approval:
+execution prices, supplied protection, funds and contract rules are rechecked
+server-side. An exhausted or unavailable risk allowance produces no sizing
+suggestion, but does not prevent a manually entered quantity from being submitted.
+Cash available and leveraged margin are not risk budget.
+Submission progress, validation/server rejections, cancellation and confirmed
+results appear in the sticky action bar beside Paper BUY/SELL, not only above
+the scrollable form. Disabled actions explain missing connection, account
+synchronization or live prices. A rejected or unconfirmed order never shows a
+successful fill; inspect the displayed reason instead of repeatedly submitting.
+
 For CASH stocks, MIS permits longs and collateral-backed shorts; CNC permits buys and exits
 against this paper account's holdings only. New CASH MIS longs and shorts reserve 20%
 of entry notional (fixed simulated 5x leverage); CNC purchases reserve 100%.
@@ -253,6 +287,12 @@ The popup's **History** tab derives its history from the
 authenticated account's existing MongoDB fill records; it makes no additional
 history requests and does not poll. A compact performance card shows the overall
 score and completed-trade P&L; its expandable explanation documents the methodology.
+**Date-wise profit & loss** shows each IST execution date, newest first, with
+positive net fill results, losses and net realized P&L. Recorded entry fees and
+partial exits count on their fill dates, even while a position remains open;
+open unrealized P&L is excluded. Losses are displayed as positive amounts and
+net P&L is profit minus loss. Dates with no fills are omitted. The breakdown
+respects the stock/F&O workspace and is not affected by the history search.
 Switch between **Closed trades** and **All fills**, search by symbol, exchange or
 MIS/CNC, and expand any card for its full details. Search filters only the list,
 not the overall score. **Other order activity** lists completed/cancelled/expired/
@@ -268,6 +308,12 @@ until that exchange/stock/product position returns to zero. It shows total share
 entered/exited, average entry/exit prices, full entry/exit values, final P&L and
 opening/closing times. A later re-entry starts a new trade; simultaneous MIS/CNC
 and NSE/BSE positions are independent. Shorts use SELL entry and BUY exit.
+Each closed-trade card shows a concise **Why profit / loss / break-even** explanation:
+average execution-price movement in the trade's direction, all recorded exit triggers
+(including partial exits), and the effect of saved fees. Fee-driven losses are called
+out even when prices moved favourably. Missing legacy exit triggers are identified
+as unrecorded. Reasons are derived from persisted fills on every load, including
+existing history; they do not infer news, indicator signals or why the market moved.
 
 The overall historical score out of 100 is
 `winning fully closed positions / all fully closed positions * 100`.
@@ -289,6 +335,50 @@ a misleading score or resetting history.
 
 ### Conditional orders and browser-only execution
 
+Each **Positions** card includes a live, rule-based exit suggestion: consider exiting
+when the saved target/stop is reached or MIS/expiry-day square-off is due; otherwise
+hold only within the saved exit plan. Missing or partial protection prompts a review.
+Stale/offline prices and closed sessions withhold live exit guidance; expired contracts
+are marked for review, not given a fabricated exit price. Suggestions refresh with
+existing live prices and the session clock, without extra polling or new automatic
+orders. They are not trend forecasts. Open P&L excludes fees; a target hit does not
+guarantee a net profit after costs and slippage.
+
+Open **Positions** also offers **Check entry with history**. This on-demand,
+authenticated check loads 14 calendar days of 15-minute candles and 90 calendar
+days of daily candles, anchored to the persisted **first opening fill** of the
+current position cycle. Additions/partial exits do not rewrite that entry price;
+later additions and the current averaged basis are explicitly not graded. The
+server resolves the owner's position and rejects stale opening-fill IDs; it never
+accepts a client-supplied entry price or timestamp.
+
+Entry quality is **Favourable**, **Mixed**, **Risky** or **Not enough data**, not a
+promise that an entry was correct. Only candles closed by the entry timestamp
+contribute: entry-day daily candles and unfinished 15-minute bars are excluded,
+even when the check runs much later. Both timeframes show EMA20/EMA50, RSI14,
+ATR14, the prior 20-bar low/high as support/resistance references, and the last
+five completed candles with OHLC and IST timestamps. Opposing trend, RSI above
+70 for longs/below 30 for shorts, an entry over 2 ATR beyond EMA20 in the trade
+direction, or entry within 0.5 ATR of the relevant range edge flags risk.
+Favourable requires aligned trend/momentum without these warnings on both
+timeframes. Missing/invalid/stale history or fewer than 50 completed bars on
+either timeframe withholds a complete verdict. Latest-candle checks use weekdays,
+not a verified holiday calendar. F&O uses the saved exact contract's history,
+which may be too short; an option premium trend is not an underlying-market view.
+Provider-adjusted/revised history may differ from data actually published then;
+this is an as-of-candle reconstruction, not an archived point-in-time feed.
+Checks use the existing historical-request queue, do not poll, and never place
+or change orders. Use exit suggestions separately for the current position.
+If only one timeframe passes, its result is shown prominently as **partial**,
+not as a full entry verdict. MIS prioritizes the 15-minute view; CNC/NRML
+prioritize daily context. A secondary-only view explicitly leaves the main
+timeframe unverified. Missing-history messages include the actual/required
+candle counts or the missing-OHLC/stale-close reason, with expected and received
+close times in the evidence. Unfinished candles are removed before counting
+missing OHLC, so an incomplete entry-day daily bar or current 15-minute bar
+cannot invalidate otherwise complete pre-entry history. This does not lower
+the 50-candle requirement or substitute a different instrument.
+
 The paper order-type menu follows the holding period: Intraday (MIS) offers Market
 and Limit; Carry-forward (CNC) also offers GTT. Target + stop-loss exits remain
 available for both. Switching from CNC GTT to MIS resets the order type to Market.
@@ -307,7 +397,7 @@ available for both. Switching from CNC GTT to MIS resets the order type to Marke
   a gap through a stop may fill worse than its stop price.
 - **Attach target + stop-loss to entry:** creates linked protection for the
   resulting whole position after a Market, Limit or GTT entry fills. Entry
-  protection is mandatory for new opening entries and must straddle the
+  protection is optional for new opening entries; when supplied, it must straddle the
   entry/limit price and actual execution price. Existing linked protection is
   retained and resized on additions and partial exits, then cancelled when flat.
   Oversized separate closing instructions are cancelled rather than reversing a position.
@@ -328,9 +418,9 @@ They are not real broker GTT orders and no background server worker runs after
 the terminal closes. Browser throttling or network outages can delay execution.
 Reconnection checks current observed prices, not missed historical crossings.
 The client evaluates ticks locally and submits a signed-price processing command
-only for a matching trigger, order expiry, MIS square-off or newly observed daily
-loss halt; unchanged ticks do
-not poll the paper-account API. The server independently rechecks every rule.
+only for a matching trigger, order expiry or MIS square-off; unchanged ticks do
+not poll the paper-account API. Daily loss guidance does not generate processing
+requests or persisted entry locks. The server independently rechecks execution rules.
 Concurrent tabs use the same revision/idempotency checks, preventing double fills.
 An exclusive browser automation lock also prevents competing tabs from driving
 the same account while the active owner holds it.
@@ -341,7 +431,7 @@ the refreshed account and selects **Resume automatic paper orders**.
 
 The authenticated **Risk & Performance** page at `/risk` summarizes account risk,
 protection, costs and completed-trade performance without account polling.
-These safeguards apply to the MongoDB paper portfolio, not real Groww orders or
+This guidance applies to the MongoDB paper portfolio, not real Groww orders or
 the separate legacy order-ticket simulator.
 
 #### Page-aware F&O paper trading
@@ -349,18 +439,36 @@ the separate legacy order-ticket simulator.
 The Paper trading popup on `/` selects CASH stocks; on `/fno` it selects verified
 futures/options contracts. Positions, active orders and history/success scores
 are filtered to the current page's segment. **Both segments share the existing
-INR 1,00,000 balance, daily loss halt and account risk limits**; Account and `/risk`
+INR 1,00,000 balance and advisory account-risk figures**; Account and `/risk`
 show account-wide figures. Reset clears both segments.
 
 F&O supports MIS and NRML, Market/Limit orders and linked target/stop exits, not
 GTT. Futures may be long or short; options may only be bought and sold to close
 owned units. Uncovered option writing and reversal through zero are rejected.
+Selecting a contract or holding period on the F&O trading page prefills the
+paper ticket with that exact contract, exchange and MIS/NRML product. Opening
+the popup restores the current page selection; paper-only edits do not change
+the page analysis. A different contract/product resets the F&O entry form to
+one whole lot and clears old order prices; no contract is guessed if none is
+selected on the page.
+
+The paper action guide separates direction from execution: buying CE expresses
+a bullish view; buying PE expresses a bearish view. Both open via BUY, while
+SELL only reduces/closes owned options in the selected exchange and product.
+Action buttons say **BUY to open/add CE/PE** or **SELL to close CE/PE**; unavailable
+option sells explain the missing holding instead of suggesting option writing.
+Futures distinguish opening/adding longs/shorts from closing the opposite
+position. Target/stop brackets identify the exit side. Option profit depends on
+premium movement after costs; index direction alone is insufficient because
+time decay and volatility matter. Existing analysis stays separate: labels are
+not entry recommendations, and no side or order is executed automatically.
+
 Quantity is contract units in exact lot-size multiples; prices must respect the
 contract tick. Saved records include exact contract metadata and expiry.
 **All futures entries reserve 100% of notional and option buys reserve 100% of
 premium, plus fees, even for MIS.** This is conservative paper funding, not actual
 broker margin; many futures lots will be unaffordable with the starting balance
-or fail the 20% concentration cap. No extra leverage is implied.
+regardless of the advisory 20% concentration guideline. No extra leverage is implied.
 
 Existing position cost basis, cash, cost history and legacy CASH records are
 preserved. New risk concentration groups CASH and contracts by the same
@@ -368,8 +476,9 @@ underlying, adding gross cash/futures notional and option premium exposure (not
 delta-adjusted exposure). No share-price substitution or second lot multiplication
 is used in contract P&L.
 
-F&O entries recheck closed-candle technical agreement, fresh same-day contract
-quotes and fresh depth on the server. NRML uses completed daily candles.
+F&O fills recheck fresh same-day contract quotes on the server. Technical
+agreement, depth and timing remain informational rather than entry requirements;
+submitting an order does not fetch historical/depth strategy approval.
 CASH-only timing/ORB confluence is not presented as F&O confirmation.
 F&O prices use the contract's FNO feed and segment-bound signed proofs.
 The single browser automation owner streams and processes **both segments** even
@@ -379,37 +488,70 @@ MIS and expiry-day F&O positions are scheduled for observed-price square-off at
 position: there is no invented settlement price, exercise, assignment or physical
 delivery simulation. No fills are permitted after expiry.
 
-- New entry risk, including estimated entry/stop-exit costs, is capped at **0.5%
-  of equity**. Combined protected open and pending-entry risk is capped at **2%**.
+- Optional new-entry risk guidance, including estimated entry/stop-exit costs,
+  uses **0.5% of equity**. Combined protected open and pending-entry guidance
+  uses **2%**. Neither figure blocks submission.
 - Gross exposure in one stock/underlying, including pending entries across products and
-  exchanges, is capped at **20% of equity**, not 20% of leveraged margin.
-- Missing/stale position marks and unprotected legacy exposure block new entries.
-  Attach protection, cancel pending exposure or close positions to resolve them.
-  Exits and protection management do not depend on fresh strategy approval.
+  exchanges, has an advisory **20% of equity** reference, not 20% of leveraged margin.
+- Missing/stale account marks and unprotected exposure make risk estimates
+  incomplete, but do not block entries. The instrument being filled still
+  requires its own fresh verified execution price.
 - A **1.5% daily loss budget** uses start-of-IST-day book equity (initial balance
   plus earlier realized outcomes). Losses are today's negative net fill outcomes
   plus current unrealized losses, including carried positions. Profits do not
   replenish that budget; this is deliberately conservative, not close-to-close
-  daily return. An observed halt is persisted for that IST date despite recovery.
-  Reset cannot remove today's halt, and regular-session resets after fills today
-  are rejected. Exits remain available.
+  daily return. Reaching it is informational: no new daily halt is persisted
+  or enforced, and older saved halt dates do not block entries or confirmed resets.
 - A sizing suggestion uses the stop, per-entry budget and stock cap; it is not
-  approval. The server independently checks current total exposure.
+  approval. Users can enter a different quantity, including when a guideline
+  has no remaining allowance.
 
-Every opening fill requires authoritative technical and timing agreement from
-completed regular-session candles, fresh valid five-level depth, spread at most
-0.2% and no opposing order-book pressure. CASH MIS also requires the 30-minute opening
-range breakout and same-slot volume confirmation; CNC is BUY-only and uses
-completed daily candles. Pending Limit/GTT placement is not strategy approval:
-entries are checked again at fill time. Denials reject the entry and release its
-reservation without charging fill fees. Due protective exits and square-offs
-take priority; unrelated entries wait for another tick.
+Technical indicators, completed-candle agreement, depth/spread, timing and
+opening-range/volume analysis remain visible guidance, not paper-entry gates.
+Neither manual fills nor triggered Limit/GTT entries request strategy approval.
+Market hours, the operational 15:20 MIS entry/square-off cutoff, fresh verified
+fill prices, funds, contract lots/ticks/expiry, valid supplied protection,
+ownership and idempotency remain enforced. CNC SELL and option SELL remain
+exit-only. Due protective exits and square-offs take priority; unrelated entries
+wait for another tick. Supplied target/stop exits still execute normally.
 
-Future portfolio fills use `ESTIMATED_V1`: **0.10% of turnover per fill** as fees,
-rounded up to paise, and **0.05% adverse slippage per side**, rounded in the adverse
-direction to the instrument tick. Limit prices are respected. Entry fees reduce
+New portfolio fills use `INDIA_FLAT20_V2`: **flat Rs20 brokerage per executed BUY
+and per executed SELL** (Rs40 brokerage per round trip), plus itemized estimated
+STT, exchange transaction charges, IPF/IPFT, SEBI turnover fees, buy-side stamp
+duty, GST and delivery-sell DP charges. The shared trade calculator supplies the
+statutory schedule; its normal Groww brokerage is overridden only for paper fills.
+Rates reviewed 18 November 2026 include the April 2026 STT changes: futures
+SELL 0.05%, options SELL 0.15% of premium. CASH delivery STT is 0.1% each side;
+intraday STT is 0.025% on SELL. GST is 18% of brokerage, exchange/IPF, SEBI and DP
+fees, not of STT/stamp duty. STT rounds to whole rupees per fill; other items to
+paise. Delivery-sell DP is modeled per fill at Rs20 before GST, or Rs3.50 when
+sell turnover is below Rs100.
+
+NSE uses the March 2026 transaction/IPFT split. BSE uses standard-group transaction
+rates and modeled IPF of Rs0.01 per lakh gross turnover
+([BSE IPF](https://www.bseindia.com/static/investors/claim-against-defaulter));
+security-group/contract-specific rates and actual contract-note aggregation can
+differ. See [Groww charges](https://groww.in/pricing),
+[NSE transaction/IPFT circular](https://nsearchives.nseindia.com/content/circulars/FA73061.pdf)
+and [NSE STT circular](https://nsearchives.nseindia.com/content/circulars/FATAX73524.pdf).
+Income/capital-gains tax, interest, penalties, exercise and physical settlement
+are not simulated.
+
+The order ticket previews a BUY/SELL-specific charge breakdown and entry funds
+including charges. Saved fills persist their breakdown; history shows gross and
+net completed P&L, and the risk page totals saved V2 charge components separately
+from older, unitemized fees. Pending entries reserve margin plus estimated charges;
+placing/cancelling unfilled orders or setting protection does not debit brokerage.
+Risk sizing uses the full quantity's fixed and variable charges, not one-share
+fees multiplied by quantity.
+
+Fills retain **0.05% adverse slippage per side**, rounded in the adverse direction
+to the instrument tick. Limit prices are respected. Entry fees reduce
 cash and net realized P&L immediately; closing fills realize gross P&L less exit
 fees. Basis excludes fees, and completed-cycle P&L includes all entry/exit fees.
+Existing `ESTIMATED_V1` (0.10% turnover fee) and legacy cost-free fills retain
+their original amounts; no historical fills are recalculated. Separate V1, V2,
+legacy and mixed-cycle cohorts avoid silently mixing fee policies.
 These are illustrative estimates, not Groww's actual tariff or a liquidity model.
 The historical backtest's separate fixed 0.2% round-trip model is unchanged and
 is not directly comparable to this forward paper simulation.
@@ -799,7 +941,177 @@ details also appear in the dashboard error message. A schema failure is not
 necessarily a subscription problem. Share only the error response, never the
 session cookie or token, when reporting a failure.
 
+### NIFTY 100 stock screener
+
+Open **NIFTY 100 screener** from the stock-terminal header (`/screener`). The page
+requires the private terminal login and Groww connection. Once connected, it
+automatically loads the official NSE NIFTY 100 constituent CSV and scans every
+stock for **MIS / 15-minute** and **CNC / daily** technical setups. Membership is
+validated as exactly 100 distinct NSE equities with issuer/sector/ISIN metadata;
+incomplete, duplicate, malformed or unavailable lists fail explicitly. The
+official CSV is cached server-side for up to one hour, with its source and fetch
+time displayed. Broker tokens are never sent to NSE for this public download.
+
+Validated membership (up to one hour) and historical baselines persist in this
+browser's IndexedDB. Reopening restores detailed cached analysis before loading
+history; no credentials, account data, signed tick proofs or live ticks are
+persisted. Schema/identity checks and closed-candle indicator recalculation run
+when restoring. Invalid records are rejected with a warning; unavailable/full
+storage is explicit and leaves this visit operating in memory.
+
+The existing Groww WebSocket worker streams prices through the authenticated
+terminal SSE bridge: 100 stocks use two subscriptions of at most 50 instruments.
+Browser updates batch every 250ms. Matching fresh ticks update price-sensitive
+verdict checks and ATR-based levels, without REST analysis/price polling or
+changing historical timestamps, closed candles, RSI, MACD, ATR or other confirmed
+indicator values. LTP ticks cannot manufacture OHLC or volume. Prices arriving
+out of order or for other instruments are ignored/rejected; a failed group loses
+its live approvals while the other can continue. Reconnect is explicit. The
+existing Python/Groww feed runtime must be available on the deployment; a
+serverless host without that runtime cannot provide this feed.
+
+Only missing/outdated history uses the existing analysis endpoint, sequentially
+paced by at least 1.1 seconds plus the server's per-token historical queue.
+First-visit warmup can require 200 calls and several minutes. MIS baselines
+expire at each completed regular-session 15m bar; CNC expires at session close.
+The last completed candle must actually be present, not merely a new fetch
+timestamp. There is no exchange-holiday calendar; missing expected weekday bars
+fail closed. Each unavailable baseline is attempted at most once per boundary,
+unless manually retried, avoiding loops if the provider's candles lag. History
+refresh/retry controls keep good baselines and never clear the table.
+Rate limits pause loading until cooldown expires; 403 or three consecutive
+failures also pause it. Page close/navigation or Groww disconnect aborts network
+work. No always-on worker, AI request or order is started. Separate tabs remain
+subject to Groww's account limits.
+
+Only completed regular-session 15m candles or daily candles whose IST session
+has closed are used; indicators are recalculated after excluding forming bars.
+EMA20/50 ordering, RSI, MACD and SuperTrend must agree; MIS also needs VWAP.
+ATR sets conditional risk levels through the existing deterministic verdict
+engine. Missing/omitted/stale evidence shows HOLD or an explicit unavailable
+cell, never an invented BUY/SELL. Both modes require a fresh live tick (60 seconds)
+and current history; cached/snapshot prices alone never approve an entry.
+MIS also needs an open weekday session before 15:20 IST. CNC retains its
+three-day candle/snapshot freshness limit. Freshness expires locally even when
+no ticks arrive. CNC SELL is exit/avoid, not a short entry.
+
+Results appear in a table with stock, sector, intraday and carry-forward
+columns; the table scrolls horizontally on narrow screens. Search by
+symbol/company/sector or filter either timeframe's verdict; expand a cell for
+indicators, reasons, conditional entry/stop/targets and timestamps.
+Open full intraday/carry analysis to refresh one stock with charts and the rest
+of the existing analysis. These links initialize the stock terminal through
+`/?symbol=RELIANCE&mode=MIS` or `mode=CNC` (daily interval). Screening is technical
+only, not probability of profit or executable entry approval: depth/spread,
+ORB/volume, news/sector context and all existing trade/risk checks still apply.
+
 ### Futures and options
+
+#### Selected-option Greeks and expiry POP
+
+Selecting a CE/PE contract shows **Option Greeks & expiry POP** above the existing
+chart/technical indicators. Delta, gamma, theta, vega and rho are calculated locally
+using European Black-Scholes-Merton, with per-unit and hypothetical lot-quantity
+values. Theta is rupees per calendar day; vega/rho are rupees per +1 percentage
+point volatility/interest rate. Delta is premium sensitivity per rupee of spot;
+gamma is delta sensitivity per rupee. Futures show a not-applicable explanation,
+not made-up option metrics.
+
+The panel estimates annual IV from current option premium and verified underlying
+spot using a bounded solver (0.01%-500%), or accepts an explicit percentage IV
+override. Raw Groww IV remains a separately labelled snapshot: its units are not
+assumed or converted. The editable 6% continuously compounded annual rate and 0%
+continuous dividend yield are **illustrative model defaults**, not live RBI/broker
+data. Expiry is the catalog date at regular exchange close, 15:30 IST; time is
+calendar ACT/365. Special sessions, discrete dividends and volatility smiles are
+not modeled.
+
+**Gross expiry POP** is the risk-neutral lognormal probability that a hypothetical
+new long option finishes beyond strike plus entry premium (CE), or strike minus
+entry premium (PE). It is not delta, ITM probability, a technical win rate or a
+real-world forecast. Breakeven and POP exclude **all brokerage, taxes, slippage,
+financing, exercise and physical-settlement costs**; net-of-cost POP is not calculated.
+They do not describe option writing or an existing position. Blank entry follows
+current LTP; entering a premium locks this hypothetical cost. Lots here never
+change the paper ticket or submit orders. Intrinsic/time value, moneyness, days
+remaining, ITM probability, a model central 68% terminal range and gross expiry
+scenarios provide context; they do not generate BUY/SELL instructions.
+
+Authenticated `GET /api/groww/option-underlying?symbol=<exact-option-symbol>&exchange=NSE`
+verifies the selected current CE/PE against the catalog and requests one matching
+CASH IDX/EQ quote. Stock options use exact underlying symbols; MIDCPNIFTY and
+NIFTYNXT50 share the verified aliases used by the near-spot guide. Missing,
+ambiguous, expired or unresolvable identities show unavailable rather than a
+guessed stock/index or a futures proxy. No option chain/history/LLM request is
+made by this panel.
+
+The existing option stream and an underlying-price stream update inputs; a
+one-second clock updates time decay and freshness. Both prices must have a
+same-IST-day trade no older than 60 seconds, no more than five seconds in the
+future and no more than 30 seconds apart. No API is called per tick. Underlying
+snapshots load with option snapshots or **Refresh underlying**; the usual F&O
+snapshot refresh retains its hidden-tab/rate-limit handling. Missing/stale data,
+invalid assumptions, expired options and unidentifiable IV show explicit errors,
+not zero Greeks. OI, volume, raw broker IV and candle indicators remain snapshots.
+The model ignores delivery funding/settlement liabilities; net paper results
+remain in paper history.
+
+#### Option-aware verdict
+
+The option panel also shows a separate **Option-aware verdict** beside the
+unchanged technical decision. For a new purchase it requires technical BUY,
+fresh matching inputs, and a model premium within one contract tick of current
+LTP. An inconsistent manual IV override shows HOLD rather than inventing an edge.
+Edited historical entry cost and hypothetical lots do not influence this verdict.
+
+The horizon is the remaining regular session for MIS (no new-entry guidance from
+15:20 IST), or the next 24 calendar hours for NRML, capped at catalog expiry at
+15:30 IST. Full BSM repricing evaluates separate favorable/adverse spot scenarios
+`spot * exp(+/-IV * sqrt(horizon / 365 days))`, unchanged spot/IV time decay,
+IV down one percentage point (floor 0.01%), and a one-percentage-point adverse
+rate change (down for CE, up for PE). All rows include the selected elapsed time;
+they are separate hypothetical stresses, not a combined shock or forecasts.
+Delta/gamma, theta, vega and rho therefore affect the resulting scenario premiums.
+
+**BUY CANDIDATE** requires favorable-spot premium to reach the existing technical
+first target, while unchanged-spot/time, IV-down and adverse-rate premiums stay
+strictly above the existing technical stop. Otherwise the separate verdict is
+**HOLD**, with pass/fail reasons and scenario prices. The adverse-spot row exposes
+stop risk without vetoing a trade simply because its planned stop could be hit.
+No arbitrary raw Greek or expiry-POP threshold is used. Expiry POP is not a
+holding-period win rate and does not override technical direction. These
+scenario-feasibility rules are unbacktested, advisory and gross of all costs.
+
+A fresh technical SELL is **SELL / EXIT OWNED OPTIONS ONLY** even when underlying
+model inputs are unavailable: entry-risk filters never block exits or imply
+uncovered writing. Expired contracts and stale option quotes cannot produce a
+fresh option-aware verdict. CASH/futures, the existing technical/AI results and
+reference levels, and paper-order permissions remain unchanged. Live inputs and
+the local clock recalculate this verdict without extra API or LLM calls.
+
+#### Verdict duration and restored observations
+
+Both the **technical BUY/SELL/HOLD signal** and the separate **option-aware
+verdict** show live observed-duration timers and their first-observed IST time.
+The technical timer follows the raw signal, not the separate CASH entry-timing
+WAIT/clearance label. Normal ticks and unchanged snapshots do not restart a
+timer. A changed signal, instrument/exchange, product or candle interval starts
+a new observation; the two verdicts have independent histories.
+
+The browser stores the most recent observation for each verdict type in
+`localStorage`, so a matching selection can restore its last state after reload.
+Only actively observed, visible-page intervals are counted. Reloads, hidden
+tabs, unavailable verdict data and observation heartbeats more than five
+seconds apart create unmonitored gaps, not continuous holding time. A restored
+matching state keeps its accumulated **observed** duration with a prominent
+“not continuous”/gap explanation. A different state on return starts at its new
+first observation and marks the exact transition time as unknown. Missing or
+stale data pauses timing instead of treating an unavailable-data HOLD as a
+confirmed market signal. Storage/validation failures are shown explicitly;
+current-session timing remains available. No account data or credentials are
+stored by these timers, and they make no API or order calls.
+
+#### Contract selection and technical analysis
 
 Open **Futures & options** in the header to visit the authenticated `/fno` page.
 The main `/` workspace is for CASH stocks; the market-segment dropdown has been
@@ -808,6 +1120,62 @@ controls. Contract analysis, charts, technical/AI setups, cost calculations and
 reviewed F&O order submission live on `/fno`. Its Paper trading popup supports
 futures and bought options using the shared practice account. Use **Stocks** in
 the header to return to the stock workspace.
+
+Selecting a stock or contract updates the current URL with `symbol`, `exchange`
+and `mode`, without reloading the workspace. Bookmark or copy that URL to restore
+the selection after a reload: for example `/?symbol=M%26M&exchange=BSE&mode=CNC`
+or `/fno?symbol=NIFTY26NOV25000PE&exchange=NSE&mode=NRML`. F&O links resolve exact
+contract metadata from the current catalog after Groww connects; missing/expired
+contracts show an error instead of selecting a different strike. Paper trading
+receives the restored F&O selection as well. Editing/clearing a selection removes
+the old selection from the URL; these links never submit orders.
+
+Both the analysis picker and Paper trading picker offer **Find stock / index options
+near spot**. Search the **Underlying stock or index** field and choose a verified
+listed underlying, expiry and CE/PE side. The **Strike price** dropdown defaults
+to the nearest listed strike to spot and includes every actual strike for that
+expiry/side, not only the seven visible cards. Choose another strike to browse
+contracts around it, then select an exact contract card explicitly. Seven nearby actual listed strikes are
+computed from the full matching catalog, not the first search page. The nearest
+strike is highlighted (lower strike wins equal-distance ties), with signed
+strike-minus-spot distance, CE/PE-correct ITM/ATM/OTM and lot size. Nearest listed
+does not necessarily mean exactly ATM. A custom strike reference never changes
+which strike is nearest to spot; the nearest remains labelled in the dropdown
+even if outside the current seven cards. Changing underlying/expiry/side clears
+the strike reference and selected contract; switching CE/PE preserves the chosen
+expiry. Changing the strike reference clears the selected contract too. Partial
+search text does not request spot/history until an exact verified underlying is chosen.
+
+The authenticated `GET /api/groww/fno-guide?exchange=NSE` lists supported stock/index
+underlyings; add `underlying=NIFTY&type=CE&expiry=2026-11-19` for the spot snapshot,
+available side-specific expiries, the complete `strikes` list and nearby contracts.
+Add `strike=<listed-price>` to center the seven cards around a chosen strike;
+unlisted strikes are rejected before fetching market data. The nearest listed expiry
+is used if omitted. Spot quotes and 15m candles use verified CASH IDX/EQ catalog
+identities, never an option premium. MIDCPNIFTY maps to the catalog's NIFTYMIDSELECT
+index and NIFTYNXT50 to NIFTYJR; unavailable or ambiguous mappings stay in exact
+contract search instead. Stocks match exact underlying symbols, never substring
+matches. Existing `indices` / `index` response keys are retained for compatibility
+and may now identify EQ stocks as well as IDX indices. Futures retain the existing search below.
+
+**Find stock / index options near spot** opens an absolute-positioned, scrollable overlay
+below its button without moving the selected-contract field. Click outside,
+move focus outside the guide, or press Escape to dismiss it.
+
+Underlying guidance requires agreement from EMA20/50 ordering, RSI, MACD and
+SuperTrend using at least 50 complete regular-session 15m candles. Index
+volume/VWAP are not invented. Bullish evidence favors examining CE, bearish PE;
+the aligned side is only a **CONDITIONAL BUY** candidate, never entry approval.
+Opposing/mixed/unavailable evidence shows WAIT, not a short option recommendation.
+Guidance also requires a same-day quote and snapshot no older than 60 seconds,
+a same-day candle close within 30 minutes and an open session before 15:20 IST.
+It expires locally without polling; use Refresh for another snapshot. Outside
+those conditions, nearby strikes remain indicative of the displayed last-known
+index value only. Candle failures are explicit and leave direction at WAIT.
+Confirm the selected option's own premium setup, spread, IV, theta and risk;
+paper strategy/risk checks are informational, while execution-integrity checks
+remain enforced. SELL remains exit-only for owned
+options. This intraday side guide is not an overnight NRML signal.
 
 The **Selected contract**
 field is editable: type at least two underlying or contract characters to show
@@ -842,8 +1210,9 @@ VWAP, SuperTrend, RSI, ATR, EMA20/50 and MACD use the selected contract's comple
 OHLCV candles. The chart, quote and indicators are contract prices or option
 premiums per unit, not underlying prices. Groww quote OI, OI day change and raw
 IV are displayed when supplied; candle OI is retained when available. Missing
-values remain unavailable. IV units are not inferred or converted, and Greeks
-are not fetched or estimated. New contracts may have insufficient indicator history.
+values remain unavailable. Raw IV units are not inferred or converted; the
+separate option panel estimates Greeks/IV from its disclosed model and verified
+inputs. New contracts may have insufficient indicator history.
 
 F&O modes are **MIS** (intraday) and **NRML** (overnight); CNC is CASH-only.
 Gemini receives the verified contract metadata and reported OI/IV along with

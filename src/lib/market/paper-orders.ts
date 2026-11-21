@@ -4,13 +4,23 @@ import { fillPaperOrder, freshPaperPrice, paperAccountSchema, paperIntradayCutof
 import type { PaperAccount, PaperInstruction, PaperLivePrice, PaperQuote } from "./paper-trading.ts";
 import { regularMarketSession } from "./market-session.ts";
 import { paperEstimatedFees } from "./paper-costs.ts";
-import { paperRiskReport } from "./paper-risk.ts";
 import { paperContractError, paperPriceKey, paperSegment } from "./paper-instruments.ts";
 import type { FnoInstrument } from "../groww/instrument-schemas.ts";
 
 const cents = (value: number) => Math.round(value * 100);
 const findPosition = (account: PaperAccount, order: Pick<PaperOrder, "symbol" | "exchange" | "product" | "segment">) =>
   account.positions.find((position) => positionKey(position) === positionKey(order));
+export function paperDefaultProtection(price: number | undefined, side: "BUY" | "SELL", tickSize = 0.01): PaperProtection | null {
+  const entry = price === undefined ? NaN : cents(price);
+  const tick = cents(tickSize);
+  if (!Number.isFinite(price) || !Number.isSafeInteger(entry) || entry <= 0 ||
+    !Number.isSafeInteger(tick) || tick <= 0 || Math.abs(tickSize * 100 - tick) > 1e-6) return null;
+  const upper = Math.round(entry * 1.05 / tick) * tick;
+  const lower = Math.round(entry * 0.95 / tick) * tick;
+  if (![upper, lower].every(Number.isSafeInteger) || lower <= 0 || lower >= entry || upper <= entry) return null;
+  return side === "BUY" ? { targetPrice: upper / 100, stopPrice: lower / 100 }
+    : { targetPrice: lower / 100, stopPrice: upper / 100 };
+}
 function protectionValid(protection: PaperProtection, long: boolean, reference: number) {
   if (!(long ? protection.stopPrice < reference && reference < protection.targetPrice
     : protection.targetPrice < reference && reference < protection.stopPrice)) {
@@ -46,9 +56,6 @@ export function placePaperOrder(account: PaperAccount, input: PaperOrderRequest,
     request.kind === "BRACKET" ? [request.targetPrice, request.stopPrice]
       : [request.limitPrice, ...(request.protection ? [request.protection.targetPrice, request.protection.stopPrice] : [])], now);
   if (contractError) throw new PaperTradingError(contractError);
-  if (options.costAware && !closing && request.kind !== "BRACKET" && !request.protection) {
-    throw new PaperTradingError("New pending paper entries require a stop-loss and target.");
-  }
   if (!closing && existing?.product === "MIS" && regularMarketSession(existing.openedAt).date !== session.date) {
     throw new PaperTradingError("Close the overdue intraday position before placing another entry.");
   }
@@ -69,7 +76,7 @@ export function placePaperOrder(account: PaperAccount, input: PaperOrderRequest,
   }
   const notional = (limitPrice ?? 0) * request.quantity;
   const reservedCash = closing ? 0 : paperRequiredMargin(request.product, notional, paperSegment(request)) +
-    (options.costAware ? paperEstimatedFees(notional) : 0);
+    (options.costAware ? paperEstimatedFees(notional, { ...request, instrument }, request.side) : 0);
   if (!Number.isSafeInteger(reservedCash) || !closing && reservedCash > account.cash) throw new PaperTradingError("Insufficient virtual cash to reserve this pending order.");
   const order: PaperOrder = {
     symbol: request.symbol, exchange: request.exchange, product: request.product, side: request.side, quantity: request.quantity,
@@ -175,14 +182,11 @@ export function nextPaperProcessing(account: PaperAccount, prices: Record<string
   if (expired) return { type: "PROCESS", symbol: expired.symbol, exchange: expired.exchange,
     ...(expired.segment === "FNO" ? { segment: "FNO" } : {}) };
   const instruments = [...account.positions, ...account.orders.filter(activePaperOrder)];
-  const recordHalt = account.riskHaltDate !== regularMarketSession(now).date && paperRiskReport(account, prices, now).dailyLocked;
   for (const item of instruments) {
     const tick = prices[paperPriceKey(item)];
     if (!tick?.paperQuoteProof) continue;
     const quote: PaperQuote = { ...item, segment: paperSegment(item), price: tick.price, tradeTime: tick.tradeTime };
     if (!freshPaperPrice(tick, now) || paperQuoteError(quote, now)) continue;
-    if (recordHalt) return { type: "PROCESS", symbol: item.symbol, exchange: item.exchange, quoteProof: tick.paperQuoteProof,
-      ...(item.segment === "FNO" ? { segment: "FNO" } : {}) };
     if (account.positions.some((position) => paperPriceKey(position) === paperPriceKey(item) && paperSquareOffDue(position, now)) ||
       account.orders.some((order) => activePaperOrder(order) && paperPriceKey(order) === paperPriceKey(item) && paperOrderPriceReady(order, tick.price))) {
       return { type: "PROCESS", symbol: item.symbol, exchange: item.exchange, quoteProof: tick.paperQuoteProof,

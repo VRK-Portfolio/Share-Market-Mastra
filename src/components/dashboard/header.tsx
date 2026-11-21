@@ -30,6 +30,7 @@ export function Header({ connected, onConnectionChange, terminalExpiresAt }: {
         <div className="flex flex-wrap items-center gap-3 sm:gap-5">
           <nav aria-label="Trading workspaces" className="flex flex-wrap items-center gap-3 text-xs font-medium">
             <Link href="/" aria-current={pathname === "/" ? "page" : undefined} className={pathname === "/" ? "text-accent" : "text-muted hover:text-foreground"}>Stocks</Link>
+            <Link href="/screener" aria-current={pathname === "/screener" ? "page" : undefined} className={pathname === "/screener" ? "text-accent" : "text-muted hover:text-foreground"}>NIFTY 100 screener</Link>
             <Link href="/fno" aria-current={pathname === "/fno" ? "page" : undefined} className={pathname === "/fno" ? "text-accent" : "text-muted hover:text-foreground"}>Futures &amp; options</Link>
           </nav>
           <Link href="/risk" className="text-xs font-medium text-accent underline-offset-4 hover:underline">Risk &amp; performance</Link>

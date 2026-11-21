@@ -1,6 +1,8 @@
 import { paperTradeHistory } from "./paper-history.ts";
 import type { PaperCompletedTrade } from "./paper-history.ts";
 import type { PaperAccount } from "./paper-trading.ts";
+import { paperChargesSchema } from "./paper-costs.ts";
+import { feeNames } from "./trade-calculator.ts";
 
 function tradeMetrics(trades: PaperCompletedTrade[]) {
   const winners = trades.filter((trade) => trade.realized > 0);
@@ -41,10 +43,15 @@ export function paperPerformance(account: PaperAccount) {
     realizedEquity: equity, maxDrawdown, maxDrawdownPercent,
     fees: account.fills.reduce((sum, fill) => sum + (fill.fees ?? 0), 0),
     modeledFills: account.fills.filter((fill) => fill.costModel === "ESTIMATED_V1").length,
-    legacyFills: account.fills.filter((fill) => fill.costModel !== "ESTIMATED_V1").length,
+    itemizedFills: account.fills.filter((fill) => fill.costModel === "INDIA_FLAT20_V2").length,
+    legacyFills: account.fills.filter((fill) => !fill.costModel).length,
+    itemizedCharges: paperChargesSchema.parse(Object.fromEntries(([...feeNames, "total"] as const).map(name => [
+      name, account.fills.reduce((sum, fill) => sum + (fill.charges?.[name] ?? 0), 0),
+    ]))),
     cohorts: {
       legacy: tradeMetrics(history.completed.filter((trade) => trade.costModel === "LEGACY")),
       modeled: tradeMetrics(history.completed.filter((trade) => trade.costModel === "ESTIMATED_V1")),
+      itemized: tradeMetrics(history.completed.filter((trade) => trade.costModel === "INDIA_FLAT20_V2")),
       mixed: tradeMetrics(history.completed.filter((trade) => trade.costModel === "MIXED")),
     },
   };
